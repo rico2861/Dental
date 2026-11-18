@@ -53,3 +53,5 @@ export const pool = {
 export const q = (text, params) => pool.query(text, params)
 // copie complète et cohérente de la base (aucune requête ne passe pendant l'export)
 export const dumpDb = async () => { const release = await acquire(); try { return await db.dumpDataDir('gzip') } finally { release() } }
+// même copie + position exacte du journal des transactions au même instant (la valeur stockée dans la copie est pré-allouée)
+export const dumpDbWithLsn = async () => { const release = await acquire(); try { let lsn = null; try { const r = (await run('select last_value, is_called from dl_changelog_lsn_seq', [])).rows[0]; lsn = r.is_called ? Number(r.last_value) : Number(r.last_value) - 1 } catch {} return { blob: await db.dumpDataDir('gzip'), lsn } } finally { release() } }

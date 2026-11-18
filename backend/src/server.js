@@ -7,7 +7,7 @@ import { migrate, ensureOwner } from './db/migrate.js'
 import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
 import { ALL, SENSITIVE, ROLES, makePermissions, assignedSql } from './core/permissions.js'
 import billing from './routes/billing.js'; import clinical from './routes/clinical.js'; import stock from './routes/stock.js'; import cash from './routes/cash.js'
-import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import reports from './routes/reports.js'; import documents from './routes/documents.js'
+import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import { ensureLogTriggers, startPlus, maintenance } from './lib/backup-plus.js'; import reports from './routes/reports.js'; import documents from './routes/documents.js'
 import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
 const SECRET = config.secret
 if (!SECRET || SECRET.length < 32) throw new Error('JWT_SECRET (32+ caractères) requis')
@@ -23,6 +23,8 @@ const audit = (req, action, table, id, details) =>
 const app = express()
 app.set('trust proxy', 1)
 app.use(helmet()); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
+// mode mono-utilisateur pendant une restauration : toute autre requête est refusée proprement
+app.use((req, res, next) => maintenance.on && req.path.startsWith('/api/') && req.path !== '/api/health' ? res.status(503).json({ error: (maintenance.why || 'Restauration en cours') + ' : réessayez dans un instant', code: 'MAINTENANCE' }) : next())
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next)
 const fail = (res, s, error, code) => res.status(s).json({ error, code })
 
@@ -245,8 +247,9 @@ app.use(express.static(config.frontendDir, { etag: true, setHeaders: (res, f) =>
 app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail(res, 413, 'Fichier trop volumineux (10 Mo maximum)') : fail(res, 500, 'Erreur serveur') })
 { const c = await pool.connect()   // base embarquée : migrations + propriétaire appliqués automatiquement au démarrage
   try { await migrate(c, () => {}); if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {}) } finally { c.release() } }
+try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
 const server = app.listen(config.port, () => console.log('DENTAL LIGHT prêt sur le port', config.port))
-if (process.env.NODE_ENV !== 'test') startScheduler()   // sauvegarde automatique quotidienne
+if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)
 if (process.env.NODE_ENV !== 'test') startAlerts()   // notifications automatiques (toutes les 30 minutes)

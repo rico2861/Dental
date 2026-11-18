@@ -31,6 +31,8 @@ export async function applyPendingRestore(dbDir) {
     if (fs.existsSync(dbDir) && fs.readdirSync(dbDir).length) { fs.renameSync(dbDir, dbBak); undo.push(() => { fs.rmSync(dbDir, { recursive: true, force: true }); fs.renameSync(dbBak, dbDir) }) }
     fs.mkdirSync(dbDir, { recursive: true })
     fs.rmSync(MARKER(), { force: true })
+    // nouvelle chaîne de sauvegarde (les journaux d'avant restent liés aux anciennes complètes)
+    try { const ci = path.join(BDIR(), '_chaine', 'index.json'), c = readJson(ci, null); if (c) { c.epoch = (c.epoch || 1) + 1; c.cursor = null; fs.writeFileSync(ci, JSON.stringify(c, null, 1)) } } catch {}
     journal({ op: 'restore_applied', id: m.id, by: m.by, ok: true, note: `Base et documents précédents conservés dans « .avant-restauration-${stamp} »` })
     console.log(`Restauration de la sauvegarde ${m.id} appliquée. Ancienne base conservée : ${dbDir}.avant-restauration-${stamp}`)
     return new Blob([buf])
