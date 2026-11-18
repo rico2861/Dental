@@ -250,5 +250,10 @@ if (process.env.NODE_ENV !== 'test') startScheduler()   // sauvegarde automatiqu
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)
 if (process.env.NODE_ENV !== 'test') startAlerts()   // notifications automatiques (toutes les 30 minutes)
-const shutdown = sig => { console.log(`${sig} reçu : arrêt propre…`); server.close(() => pool.end().finally(() => process.exit(0))); setTimeout(() => process.exit(1), 10000).unref() }
-process.on('SIGTERM', () => shutdown('SIGTERM')); process.on('SIGINT', () => shutdown('SIGINT'))
+let stopping = false
+const shutdown = async sig => { if (stopping) return; stopping = true; console.log(`${sig} reçu : arrêt propre, fermeture de la base…`)
+  const force = setTimeout(() => { console.error('Arrêt forcé après 8 s'); process.exit(1) }, 8000); force.unref()
+  try { server.close(); server.closeIdleConnections?.(); server.closeAllConnections?.() } catch {}   // les onglets ouverts ne bloquent plus l'arrêt
+  try { await pool.end() } catch (e) { console.error('Fermeture de la base :', e.message) }      // attend la requête en cours puis ferme proprement
+  console.log('Base fermée proprement. À bientôt.'); process.exit(0) }
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK']) process.on(sig, () => shutdown(sig))   // SIGHUP : fermeture de la fenêtre du terminal (Windows)

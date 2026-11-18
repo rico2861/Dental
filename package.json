@@ -7,6 +7,7 @@
     "dev": "npm --prefix backend run dev",
     "setup": "npm --prefix backend run setup",
     "migrate": "npm --prefix backend run migrate",
+    "restaurer": "npm --prefix backend run restaurer --",
     "test": "npm --prefix backend test",
     "postinstall": "npm --prefix backend install"
   }

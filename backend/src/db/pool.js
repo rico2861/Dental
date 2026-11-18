@@ -11,12 +11,23 @@ if (!dir.startsWith('memory://')) fs.mkdirSync(dir, { recursive: true })
 const restored = dir.startsWith('memory://') ? null : await applyPendingRestore(dir)
 
 // Mêmes types de retour que le module « pg » : bigint et numeric en chaînes, date en minuit local.
-const db = new PGlite(dir, { ...(restored ? { loadDataDir: restored } : {}), parsers: {
-  20: v => v,
-  1700: v => v,
-  1082: v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d) }
-} })
-await db.waitReady
+let db
+try {
+  db = new PGlite(dir, { ...(restored ? { loadDataDir: restored } : {}), parsers: {
+    20: v => v,
+    1700: v => v,
+    1082: v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d) }
+  } })
+  await db.waitReady
+} catch (e) {
+  // base illisible (souvent après un arrêt brutal) : message clair et procédure de récupération, rien n'est modifié
+  console.error('\n✖ La base de données ne s\'ouvre pas (' + (e.message || e) + ').')
+  console.error('  Cela arrive après un arrêt brutal pendant une écriture (coupure de courant, fenêtre fermée…).')
+  console.error('  Pour repartir de la dernière sauvegarde vérifiée (rien n\'est supprimé, la base actuelle est mise de côté) :')
+  console.error('      npm run restaurer')
+  console.error('      npm start\n')
+  process.exit(1)
+}
 
 const norm = v => v === undefined ? null
   : v instanceof Date ? v.toISOString()
@@ -37,7 +48,7 @@ const acquire = () => { let release; const prev = tail; tail = new Promise(r => 
 export const pool = {
   async query(text, params) { const release = await acquire(); try { return await run(text, params) } finally { release() } },
   async connect() { const release = await acquire(); let open = true; return { query: run, release() { if (open) { open = false; release() } } } },
-  end: () => db.close()
+  async end() { const release = await acquire(); try { await db.close() } finally { release() } }
 }
 export const q = (text, params) => pool.query(text, params)
 // copie complète et cohérente de la base (aucune requête ne passe pendant l'export)

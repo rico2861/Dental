@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import bcrypt from 'bcryptjs'
 import { createBackup, listBackups, getSettings, saveSettings, journalEntries, pendingRestore, requestRestore, cancelRestore, backupPath } from '../lib/backup.js'
-import { publicCloud, cloudState, configure, syncNow, listCloud, importCloud, getCloud, checkOnline, setEnabled } from '../lib/cloud.js'
+import { publicCloud, cloudState, syncNow, listCloud, importCloud, checkOnline } from '../lib/cloud.js'
 export default function (app, { need, audit, fail, wrap }) {
   const admin = req => req.user.role === 'OWNER' || String(req.user.role).startsWith('ADMIN'), who = req => `${req.user.first_name} ${req.user.last_name}`.trim()
   app.get('/api/backups', need(), wrap(async (req, res) => { if (!admin(req)) return fail(res, 403, "Réservé à l'administration")
@@ -24,12 +24,8 @@ export default function (app, { need, audit, fail, wrap }) {
   app.post('/api/backups/restore/cancel', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire')
     const ok = cancelRestore(who(req)); if (ok) await audit(req, 'RESTORE_CANCELLED', 'backups', null, {}); res.json({ ok }) }))
   // ── sauvegarde en ligne (Supabase) ──
-  app.post('/api/cloud/config', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire')
-    try { const c = await configure(req.body); await audit(req, 'CLOUD_CONFIGURED', 'backups', null, { url: c.url, bucket: c.bucket, prefix: c.prefix, enabled: c.enabled }); res.json(c); syncNow().catch(() => {}) } catch (e) { fail(res, 400, e.message) } }))
-  app.post('/api/cloud/enabled', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire')
-    if (!getCloud().enc_key) return fail(res, 400, 'Configurez d’abord Supabase'); setEnabled(!!req.body.enabled); await audit(req, 'CLOUD_ENABLED', 'backups', null, { enabled: !!req.body.enabled }); res.json({ ok: true }) }))
   app.post('/api/cloud/sync', need(), wrap(async (req, res) => { if (!admin(req)) return fail(res, 403, "Réservé à l'administration")
-    const r = await syncNow({ by: who(req) }); if (r.sent?.length) await audit(req, 'CLOUD_SYNC', 'backups', null, { sent: r.sent }); res.json({ ...r, state: cloudState() }) }))
+    const r = await syncNow({ by: who(req) }); if (r.sent?.length || r.rows || r.files) await audit(req, 'CLOUD_SYNC', 'backups', null, { backups: r.sent, rows: r.rows, files: r.files }); res.json({ ...r, state: cloudState() }) }))
   app.get('/api/cloud/check', need(), wrap(async (req, res) => { if (!admin(req)) return fail(res, 403, "Réservé à l'administration"); res.json({ ...(await checkOnline()), state: cloudState() }) }))
   app.get('/api/cloud/list', need(), wrap(async (req, res) => { if (!admin(req)) return fail(res, 403, "Réservé à l'administration")
     try { res.json({ copies: await listCloud() }) } catch (e) { fail(res, 503, e.status ? e.message : 'Pas de connexion Internet : la liste en ligne est indisponible') } }))
