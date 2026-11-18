@@ -1,0 +1,13 @@
+{
+  "name": "dental-light",
+  "private": true,
+  "description": "DENTAL LIGHT — gestion de clinique dentaire. Les commandes se lancent depuis ce dossier et s'exécutent dans backend/.",
+  "scripts": {
+    "start": "npm --prefix backend start",
+    "dev": "npm --prefix backend run dev",
+    "setup": "npm --prefix backend run setup",
+    "migrate": "npm --prefix backend run migrate",
+    "test": "npm --prefix backend test",
+    "postinstall": "npm --prefix backend install"
+  }
+}

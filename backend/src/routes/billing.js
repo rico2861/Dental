@@ -1,3 +1,4 @@
+import { payPlan, payProblem } from '../lib/billing-core.js'
 import { pipe, invoicePdf, receiptPdf, payslipPdf } from '../lib/pdf.js'
 import { makePdf, header as pdfHeader, table as pdfTable, num as pdfNum, fd as pdfFd } from '../lib/dossier-pdf.js'
 const NUM = /^\d{1,10}(\.\d{1,4})?$/, c100 = v => Math.round(Number(v) * 100)
@@ -69,6 +70,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   app.post('/api/invoices/:id/payments', need('manage_finances'), wrap(async (req, res) => {
     const { amount, currency, method, idempotency_key: key } = req.body, cur = currency === 'USD' ? 'USD' : 'HTG'
     if (!NUM.test(String(amount)) || Number(amount) <= 0 || typeof key !== 'string' || key.length < 8 || key.length > 80 || !clean(method, 30)) return fail(res, 400, 'Paiement invalide')
+    { const pb = payProblem({ paid: amount, method, reference: req.body.reference }); if (pb) return fail(res, 400, pb) }
     const out = await tx(async c => {
       const dup = (await c.query('select id,receipt_number from payments where clinic_id=$1 and idempotency_key=$2', [req.user.clinic_id, key])).rows[0]; if (dup) return { ...dup, duplicate: true }
       const inv = (await c.query("select * from invoices where id=$1 and clinic_id=$2 and kind='invoice' for update", [req.params.id, req.user.clinic_id])).rows[0]
@@ -156,15 +158,43 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     }, { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dettes patients  ·  confidentiel`, landscape: true }) }))
 
   // ── Personnel & paie ──
-  app.get('/api/employees', need('view_salaries'), wrap(async (req, res) => res.json((await q('select id,matricule,first_name,last_name,job_title,pay_mode,base_salary::text,status from employees where clinic_id=$1 order by last_name', [req.user.clinic_id])).rows)))
+  app.get('/api/employees', need('view_salaries'), wrap(async (req, res) => res.json((await q("select e.id,e.matricule,e.first_name,e.last_name,e.job_title,e.pay_mode,e.base_salary::text,coalesce(e.commission_pct,0)::text commission_pct,e.status,e.user_id,u.role,(select coalesce(json_agg(json_build_object('id',d.id,'label',d.label,'kind',d.kind,'value',d.value::float8) order by d.created_at),'[]'::json) from employee_deductions d where d.employee_id=e.id and d.active) deductions from employees e left join users u on u.id=e.user_id where e.clinic_id=$1 order by e.last_name", [req.user.clinic_id])).rows)))
+  // comptes sans fiche de rémunération (hors propriétaire)
+  app.get('/api/staff/unpaid', need('view_salaries'), wrap(async (req, res) => res.json((await q("select u.id,u.first_name,u.last_name,u.role,u.job_title from users u where u.clinic_id=$1 and u.status='active' and u.role<>'OWNER' and not exists(select 1 from employees e where e.user_id=u.id and e.status='active' and (e.base_salary>0 or coalesce(e.commission_pct,0)>0)) order by u.last_name", [req.user.clinic_id])).rows)))
+  // définir / modifier la rémunération d'un employé ou d'un compte (crée la fiche employé si besoin)
+  app.post('/api/staff/pay', need('manage_payroll', 'manage_users'), wrap(async (req, res) => {
+    const b = req.body, pp = payPlan(b); if (pp.err) return fail(res, 400, pp.err)
+    let e = /^[0-9a-f-]{36}$/.test(b.employee_id || '') ? (await q('select id,user_id from employees where id=$1 and clinic_id=$2', [b.employee_id, req.user.clinic_id])).rows[0] : null
+    if (!e && /^[0-9a-f-]{36}$/.test(b.user_id || '')) { const u = (await q("select id,first_name,last_name,job_title,role from users where id=$1 and clinic_id=$2 and role<>'OWNER'", [b.user_id, req.user.clinic_id])).rows[0]; if (!u) return fail(res, 404, 'Compte introuvable')
+      e = (await q('select id,user_id from employees where user_id=$1', [u.id])).rows[0] || (await q("insert into employees(clinic_id,user_id,first_name,last_name,job_title,base_salary,commission_pct) values($1,$2,$3,$4,$5,0,0) returning id,user_id", [req.user.clinic_id, u.id, u.first_name, u.last_name, u.job_title || (u.role === 'DENTIST' ? 'Médecin dentiste' : null)])).rows[0] }
+    if (!e) return fail(res, 404, 'Employé introuvable')
+    await q("update employees set base_salary=$2, commission_pct=$3, status='active' where id=$1", [e.id, pp.base, pp.pct]); await audit(req, 'EMPLOYEE_PAY', 'employees', e.id, { base: pp.base, pct: pp.pct }); res.json({ ok: true, id: e.id, ...pp }) }))
   app.post('/api/employees', need('manage_payroll'), wrap(async (req, res) => {
-    const b = req.body, fn = clean(b.first_name), ln = clean(b.last_name); if (!fn || !ln || !NUM.test(String(b.base_salary ?? '0'))) return fail(res, 400, 'Champs invalides')
-    const { rows: [e] } = await q('insert into employees(clinic_id,matricule,first_name,last_name,job_title,base_salary,hire_date) values($1,$2,$3,$4,$5,$6,$7) returning id',
-      [req.user.clinic_id, clean(b.matricule, 30), fn, ln, clean(b.job_title), b.base_salary || 0, /^\d{4}-\d{2}-\d{2}$/.test(b.hire_date || '') ? b.hire_date : null])
+    const b = req.body, fn = clean(b.first_name), ln = clean(b.last_name); if (!fn || !ln) return fail(res, 400, 'Prénom et nom obligatoires'); const pp = payPlan(b); if (pp.err) return fail(res, 400, pp.err)
+    const { rows: [e] } = await q('insert into employees(clinic_id,matricule,first_name,last_name,job_title,base_salary,commission_pct,hire_date) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',
+      [req.user.clinic_id, clean(b.matricule, 30), fn, ln, clean(b.job_title), pp.base, pp.pct, /^\d{4}-\d{2}-\d{2}$/.test(b.hire_date || '') ? b.hire_date : null])
     await audit(req, 'EMPLOYEE_CREATED', 'employees', e.id); res.json(e) }))
   app.get('/api/payroll', need('view_salaries'), wrap(async (req, res) => res.json((await q(
-    "select r.id,r.period,e.first_name||' '||e.last_name employee,r.base::text,r.commissions::text,r.bonuses::text,r.deductions::text,r.advances::text,r.net::text,r.paid::text,r.status from payroll_records r join employees e on e.id=r.employee_id where r.clinic_id=$1 and r.period=$2 order by e.last_name",
+    "select r.id,r.period,e.id employee_id,e.first_name||' '||e.last_name employee,r.base::text,r.commissions::text,r.bonuses::text,r.deductions::text,r.other_deductions::text,r.deduction_details,r.advances::text,r.net::text,r.paid::text,r.status from payroll_records r join employees e on e.id=r.employee_id where r.clinic_id=$1 and r.period=$2 order by e.last_name",
     [req.user.clinic_id, /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7)])).rows)))
+  // recalcule une fiche : retenues de l'employé (pourcentage du brut ou montant fixe) + autres déductions, net = brut − retenues − avances
+  const recompute = async (c, id) => { const r = (await c.query('select * from payroll_records where id=$1 for update', [id])).rows[0]; if (!r) return null
+    const gross = c100(r.base) + c100(r.commissions) + c100(r.bonuses), ded = (await c.query('select id,label,kind,value from employee_deductions where employee_id=$1 and active order by created_at', [r.employee_id])).rows
+    const details = ded.map(d => ({ label: d.label, kind: d.kind, value: Number(d.value), amount: (d.kind === 'pct' ? Math.round(gross * Number(d.value) / 100) : c100(d.value)) / 100 }))
+    const tot = details.reduce((s, d) => s + c100(d.amount), 0) + c100(r.other_deductions), net = gross - tot - c100(r.advances)
+    if (net < 0) return { err: 'Les retenues dépassent le salaire brut' }; if (net < c100(r.paid)) return { err: 'Le net deviendrait inférieur au montant déjà versé' }
+    await c.query('update payroll_records set deduction_details=$2, deductions=$3, net=$4 where id=$1', [id, JSON.stringify(details), tot / 100, net / 100]); return { net: net / 100 } }
+  const recomputeEmployee = async eid => { for (const r of (await q('select id from payroll_records where employee_id=$1 and paid=0', [eid])).rows) await tx(c => recompute(c, r.id)) }
+  app.get('/api/employees/:id/deductions', need('view_salaries'), wrap(async (req, res) => res.json((await q('select d.id,d.label,d.kind,d.value::float8 value,d.created_at from employee_deductions d join employees e on e.id=d.employee_id where d.employee_id=$1 and e.clinic_id=$2 and d.active order by d.created_at', [req.params.id, req.user.clinic_id])).rows)))
+  app.post('/api/employees/:id/deductions', need('manage_payroll'), wrap(async (req, res) => {
+    const e = (await q('select id from employees where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0]; if (!e) return fail(res, 404, 'Employé introuvable')
+    const label = clean(req.body.label, 80), kind = req.body.kind === 'pct' ? 'pct' : 'fixed', v = String(req.body.value ?? '').replace(',', '.').replace(/\s/g, '')
+    if (!label || !NUM.test(v) || Number(v) <= 0 || (kind === 'pct' && Number(v) > 100)) return fail(res, 400, 'Libellé et montant (ou pourcentage 0–100) obligatoires')
+    const d = (await q('insert into employee_deductions(clinic_id,employee_id,label,kind,value,created_by) values($1,$2,$3,$4,$5,$6) returning id', [req.user.clinic_id, e.id, label, kind, v, req.user.id])).rows[0]
+    await recomputeEmployee(e.id); await audit(req, 'DEDUCTION_ADDED', 'employee_deductions', d.id, { employee: e.id, label, kind, value: v }); res.json(d) }))
+  app.post('/api/deductions/:id/remove', need('manage_payroll'), wrap(async (req, res) => {
+    const d = (await q('update employee_deductions set active=false where id=$1 and clinic_id=$2 returning employee_id,label', [req.params.id, req.user.clinic_id])).rows[0]; if (!d) return fail(res, 404, 'Introuvable')
+    await recomputeEmployee(d.employee_id); await audit(req, 'DEDUCTION_REMOVED', 'employee_deductions', req.params.id, { label: d.label }); res.json({ ok: true }) }))
   app.post('/api/payroll/generate', need('manage_payroll'), wrap(async (req, res) => {
     const p = req.body.period; if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(p || '')) return fail(res, 400, 'Période invalide (AAAA-MM)')
     const r = await q("insert into payroll_records(clinic_id,employee_id,period,base,net) select clinic_id,id,$2,base_salary,base_salary from employees where clinic_id=$1 and status='active' on conflict(employee_id,period) do nothing", [req.user.clinic_id, p])
@@ -177,13 +207,14 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       due as (select eid, greatest(0, round(amt * pct / 100, 2) - coalesce((select sum(cp.amount) from commission_payments cp where cp.doctor_id=base.uid and cp.period=$3 and cp.clinic_id=$1),0)) c from base)
       update payroll_records r set commissions=due.c, net=r.base + due.c + r.bonuses - r.deductions - r.advances from due
       where r.employee_id=due.eid and r.period=$3 and r.clinic_id=$1 and r.paid=0`, [req.user.clinic_id, p + '-01', p])
+    for (const x of (await q('select id from payroll_records where clinic_id=$1 and period=$2 and paid=0', [req.user.clinic_id, p])).rows) await tx(c => recompute(c, x.id))
     await audit(req, 'PAYROLL_GENERATED', 'payroll_records', null, { period: p, created: r.rowCount, commissions: cm.rowCount }); res.json({ created: r.rowCount, commissions: cm.rowCount }) }))
   app.post('/api/payroll/:id/adjust', need('manage_payroll'), wrap(async (req, res) => {
     const f = ['commissions', 'bonuses', 'deductions', 'advances'], v = {}; for (const k of f) { const x = String(req.body[k] ?? '0'); if (!NUM.test(x)) return fail(res, 400, k + ' invalide'); v[k] = c100(x) }
     const out = await tx(async c => {
       const r = (await c.query('select * from payroll_records where id=$1 and clinic_id=$2 for update', [req.params.id, req.user.clinic_id])).rows[0]; if (!r) return E(404, 'Introuvable')
-      const net = c100(r.base) + v.commissions + v.bonuses - v.deductions - v.advances; if (net < 0 || net < c100(r.paid)) return E(409, 'Net négatif ou inférieur au montant déjà payé')
-      await c.query('update payroll_records set commissions=$2,bonuses=$3,deductions=$4,advances=$5,net=$6 where id=$1', [r.id, v.commissions / 100, v.bonuses / 100, v.deductions / 100, v.advances / 100, net / 100]); return {} })
+      await c.query('update payroll_records set commissions=$2,bonuses=$3,other_deductions=$4,advances=$5 where id=$1', [r.id, v.commissions / 100, v.bonuses / 100, v.deductions / 100, v.advances / 100])
+      const k = await recompute(c, r.id); if (k?.err) throw Object.assign(new Error(k.err), { status: 409 }); return {} }).catch(e => e.status ? E(e.status, e.message) : Promise.reject(e))
     if (out.err) return fail(res, ...out.err); await audit(req, 'PAYROLL_ADJUSTED', 'payroll_records', req.params.id); res.json({ ok: true }) }))
   app.post('/api/payroll/:id/pay', need('manage_payroll'), wrap(async (req, res) => {
     const a = String(req.body.amount ?? ''); if (!NUM.test(a) || Number(a) <= 0 || !clean(req.body.method, 30)) return fail(res, 400, 'Paiement invalide')
@@ -199,5 +230,5 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const r = (await q('select * from payroll_records where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0]; if (!r) return fail(res, 404, 'Introuvable')
     const emp = (await q('select * from employees where id=$1', [r.employee_id])).rows[0], pays = (await q('select * from payroll_payments where payroll_id=$1 order by paid_at', [r.id])).rows
     const cl = await clinic(req.user.clinic_id)
-    pipe(res, `paie-${emp.last_name}-${r.period}`, d => payslipPdf(d, { clinic: cl, emp, r: Object.fromEntries(Object.entries(r).map(([k, v]) => [k, ['base', 'commissions', 'bonuses', 'deductions', 'advances', 'net', 'paid'].includes(k) ? Number(v) : v])), pays })) }))
+    pipe(res, `paie-${emp.last_name}-${r.period}`, d => payslipPdf(d, { clinic: cl, emp, r: Object.fromEntries(Object.entries(r).map(([k, v]) => [k, ['base', 'commissions', 'bonuses', 'deductions', 'other_deductions', 'advances', 'net', 'paid'].includes(k) ? Number(v) : v])), pays })) }))
 }

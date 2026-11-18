@@ -1,6 +1,6 @@
 import { isAssigned } from '../core/permissions.js'
 import { advice } from '../lib/clinical-advice.js'
-import { billService, validAmounts } from '../lib/billing-core.js'
+import { billService, validAmounts, actingDoctor, payProblem, syncTeeth } from '../lib/billing-core.js'
 const HK = ['blood_pressure','diabetes','hemophilia','hiv','smoking','alcohol','pregnancy','blood_group','allergies','medications','cardiovascular','pulmonary','epilepsy','stomach','cancer','migraines','other','observations','brushing','motif','scaling_grade','bridge_from','bridge_to','remark']
 const STATES = ['saine','carie','extraite','absente','a_extraire','restauree','couronne','implant','bridge','anomalie']
 const FDI = n => Number.isInteger(n) && ((n >= 11 && n <= 48 && n % 10 >= 1 && n % 10 <= 8 && Math.floor(n / 10) <= 4) || (n >= 51 && n <= 85 && n % 10 >= 1 && n % 10 <= 5))
@@ -36,16 +36,17 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     await audit(req, 'MEDICAL_HISTORY_UPDATED', 'medical_histories', p.id); res.json({ ok: true }) }))
   app.post('/api/patients/:id/consultations', need('edit_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé'); const b = req.body
-    const doc = b.doctor_id || req.user.id; if (!(await q("select 1 from users where id=$1 and clinic_id=$2 and status='active'", [doc, req.user.clinic_id])).rowCount) return fail(res, 400, 'Médecin invalide')
+    const doc = actingDoctor(req, b.doctor_id); if (!(await q("select 1 from users where id=$1 and clinic_id=$2 and status='active'", [doc, req.user.clinic_id])).rowCount) return fail(res, 400, 'Médecin invalide')
     const teeth = String(b.teeth ?? '').split(/[ ,;]+/).filter(Boolean).map(Number); if (!teeth.every(FDI)) return fail(res, 400, 'Numéros de dents FDI invalides')
     if (b.cost && !/^\d{1,10}(\.\d{1,2})?$/.test(String(b.cost))) return fail(res, 400, 'Coût invalide')
-    const bad = validAmounts({ amount: b.cost || 0, discount: b.discount || 0, paid: b.paid || 0 }); if (bad) return fail(res, 400, bad)
+    const bad = validAmounts({ amount: b.cost || 0, discount: b.discount || 0, paid: b.paid || 0 }) || payProblem(b); if (bad) return fail(res, 400, bad)
     // L'acte est enregistré et comptabilisé ensemble : facture au nom du médecin qui a réalisé l'acte, remise et paiement éventuels
     const cx = await pool.connect(); let c, bill = null
     try { await cx.query('begin')
       c = (await cx.query('insert into consultations(clinic_id,patient_id,doctor_id,primary_doctor_id,reason,diagnosis,treatment,teeth,cost,notes,created_by) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id',
         [req.user.clinic_id, p.id, doc, p.primary_doctor_id, clean(b.reason), clean(b.diagnosis, 1000), clean(b.treatment, 1000), teeth, b.cost || null, clean(b.notes, 2000), req.user.id])).rows[0]
-      if (Number(b.cost) > 0 ) bill = await billService(cx, { clinicId: req.user.clinic_id, patientId: p.id, doctorId: doc, userId: req.user.id, description: [clean(b.reason), teeth.length ? 'dents ' + teeth.join(', ') : ''].filter(Boolean).join(' · '), amount: b.cost, discount: b.discount, paid: b.paid, method: clean(b.method, 30), consultationId: c.id })
+      if (Number(b.cost) > 0 ) bill = await billService(cx, { clinicId: req.user.clinic_id, patientId: p.id, doctorId: doc, userId: req.user.id, description: [clean(b.reason), teeth.length ? 'dents ' + teeth.join(', ') : ''].filter(Boolean).join(' · '), amount: b.cost, discount: b.discount, paid: b.paid, method: clean(b.method, 30), reference: clean(b.reference, 80), consultationId: c.id })
+      c.teeth_updated = await syncTeeth(cx, { clinicId: req.user.clinic_id, patientId: p.id, teeth, label: [b.reason, b.treatment].filter(Boolean).join(' '), doctorId: doc })
       await cx.query('commit') } catch (e) { await cx.query('rollback'); throw e } finally { cx.release() }
     await audit(req, 'CONSULTATION_CREATED', 'consultations', c.id, { patient_id: p.id, invoice: bill?.number }); res.json({ ...c, bill }) }))
   app.post('/api/patients/:id/teeth', need('edit_medical_records'), wrap(async (req, res) => {

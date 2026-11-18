@@ -2,12 +2,13 @@ import { config } from './config/env.js'
 import express from 'express'; import helmet from 'helmet'; import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser'; import jwt from 'jsonwebtoken'; import bcrypt from 'bcryptjs'; import crypto from 'crypto'
 import { pool, q } from './db/pool.js'
+import { payPlan } from './lib/billing-core.js'
 import { migrate, ensureOwner } from './db/migrate.js'
-import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'
+import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
 import { ALL, SENSITIVE, ROLES, makePermissions, assignedSql } from './core/permissions.js'
 import billing from './routes/billing.js'; import clinical from './routes/clinical.js'; import stock from './routes/stock.js'; import cash from './routes/cash.js'
-import planning from './routes/planning.js'; import reports from './routes/reports.js'; import documents from './routes/documents.js'
-import security, { notify as notifyQ, verifySecondFactor } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
+import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import reports from './routes/reports.js'; import documents from './routes/documents.js'
+import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
 const SECRET = config.secret
 if (!SECRET || SECRET.length < 32) throw new Error('JWT_SECRET (32+ caractères) requis')
 const prod = config.prod
@@ -40,12 +41,20 @@ const auth = wrap(async (req, res, next) => {
 })
 const need = (...ps) => [auth, (req, res, next) => {
   if (req.user.must_change_password) return fail(res, 403, 'Changement de mot de passe obligatoire', 'PASSWORD_CHANGE_REQUIRED')
-  if (adminish(req.user) && req.user.req2fa && !req.user.totp_enabled) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
+  if (adminish(req.user) && req.user.req2fa && !req.user.totp_enabled && !req.user.mfa_email) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
   if (ps.length && !ps.some(p => req.perms.has(p))) return fail(res, 403, 'Permission refusée')
   next() }]
 const newSession = async (req, res, u) => { const { rows: [s] } = await q('insert into user_sessions(user_id,ip,user_agent) values($1,$2,$3) returning id', [u.id, req.ip, (req.headers['user-agent'] || '').slice(0, 200)])
   res.cookie('dl', jwt.sign({ id: u.id, tv: u.token_version, sid: s.id }, SECRET, { expiresIn: '8h' }), { httpOnly: true, sameSite: 'strict', secure: prod, maxAge: 8 * 3600e3 }) }
-const strong = p => typeof p === 'string' && p.length >= 10 && /[a-z]/.test(p) && /[A-Z]/.test(p) && /\d/.test(p)
+// Politique de mot de passe : 12 caractères, majuscule, minuscule, chiffre, caractère spécial, pas de répétition,
+// ni nom / prénom / e-mail de la personne, ni mot de passe courant
+const COMMON = ['password', 'motdepasse', 'azerty', 'qwerty', '123456', '12345678', 'abcdef', 'admin', 'welcome', 'bienvenue', 'dental', 'clinique', 'clinic', 'haiti', 'soleil', 'dentist', 'docteur', 'secret', 'letmein', 'iloveyou']
+export const pwProblem = (p, u = {}) => { if (typeof p !== 'string' || p.length < 12) return 'Au moins 12 caractères'
+  if (!/[a-z]/.test(p) || !/[A-Z]/.test(p)) return 'Au moins une majuscule et une minuscule'; if (!/\d/.test(p)) return 'Au moins un chiffre'; if (!/[^A-Za-z0-9]/.test(p)) return 'Au moins un caractère spécial (! ? # @ % & * …)'
+  if (/(.)\1\1/.test(p)) return 'Pas trois fois le même caractère à la suite'; const low = p.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  for (const w of [u.first_name, u.last_name, String(u.email || '').split('@')[0]].filter(x => x && x.length >= 3)) if (low.includes(String(w).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) return 'Ne doit pas contenir votre nom, prénom ou e-mail'
+  if (COMMON.some(w => low.includes(w))) return 'Mot trop courant (password, azerty, 123456, clinique…)'; return null }
+const strong = p => !pwProblem(p)
 const clean = (v, n = 200) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : null)
 
 // ── Auth ──
@@ -64,7 +73,8 @@ app.post('/api/login', loginLimiter, wrap(async (req, res) => {
   if (u?.locked_until && u.locked_until > new Date()) { await hist(req, u, email, false, 'locked'); return fail(res, 429, 'Compte temporairement verrouillé') }
   if (!u || !(await bcrypt.compare(pw || '', u.password_hash))) { console.warn('Connexion refusée :', u ? 'mot de passe incorrect' : 'e-mail inconnu', '→', email); if (u) await failLogin(u); await hist(req, u, email, false, 'bad_password'); return fail(res, 401, 'Identifiants invalides') }
   if (u.status !== 'active') { await hist(req, u, email, false, 'account_' + u.status); return fail(res, 403, 'Compte bloqué ou désactivé') }
-  if (u.totp_enabled) return res.json({ need_otp: true, challenge: jwt.sign({ id: u.id, tv: u.token_version, p: 'otp' }, SECRET, { expiresIn: '5m' }) })
+  if (u.totp_enabled || u.mfa_email) { const mail = u.mfa_email ? await sendEmailCode(q, u) : null, rc = (await q('select count(*)::int n from recovery_codes where user_id=$1 and used_at is null', [u.id]).catch(() => ({ rows: [{ n: 0 }] }))).rows[0].n
+    return res.json({ need_otp: true, challenge: jwt.sign({ id: u.id, tv: u.token_version, p: 'otp' }, SECRET, { expiresIn: '10m' }), methods: { app: !!u.totp_enabled, email: !!u.mfa_email, recovery: rc > 0 }, email: mail }) }
   await finishLogin(req, res, u) }))
 app.post('/api/login/otp', loginLimiter, wrap(async (req, res) => {
   let d; try { d = jwt.verify(req.body.challenge || '', SECRET) } catch { return fail(res, 401, 'Défi expiré : reconnectez-vous') } if (d.p !== 'otp') return fail(res, 401, 'Défi invalide')
@@ -72,10 +82,12 @@ app.post('/api/login/otp', loginLimiter, wrap(async (req, res) => {
   if (u.locked_until && u.locked_until > new Date()) return fail(res, 429, 'Compte temporairement verrouillé')
   if (!(await verifySecondFactor(q, u, req.body.code))) { await failLogin(u); await hist(req, u, u.email, false, 'otp_failed'); return fail(res, 401, 'Code invalide') }
   await finishLogin(req, res, u) }))
+app.post('/api/login/resend', loginLimiter, wrap(async (req, res) => { let d; try { d = jwt.verify(req.body.challenge || '', SECRET) } catch { return fail(res, 401, 'Défi expiré : reconnectez-vous') } if (d.p !== 'otp') return fail(res, 401, 'Défi invalide')
+  const u = (await q('select * from users where id=$1', [d.id])).rows[0]; if (!u?.mfa_email || u.token_version !== d.tv) return fail(res, 400, 'Envoi par e-mail non disponible'); const r = await sendEmailCode(q, u); r.sent ? res.json(r) : fail(res, r.wait ? 429 : 503, r.reason) }))
 app.post('/api/logout', wrap(async (req, res) => { try { const d = jwt.verify(req.cookies.dl || '', SECRET); if (d.sid) await q('update user_sessions set revoked_at=now() where id=$1', [d.sid]) } catch {} res.clearCookie('dl'); res.json({ ok: true }) }))
 app.get('/api/me', auth, (req, res) => { const u = req.user
   res.json({ id: u.id, first_name: u.first_name, last_name: u.last_name, role: u.role, must_change_password: u.must_change_password, totp_enabled: u.totp_enabled, idle_minutes: u.idle,
-    needs_2fa_setup: !u.must_change_password && adminish(u) && u.req2fa && !u.totp_enabled, perms: [...req.perms] }) })
+    mfa_email: !!u.mfa_email, needs_2fa_setup: !u.must_change_password && adminish(u) && u.req2fa && !u.totp_enabled && !u.mfa_email, perms: [...req.perms] }) })
 // Profil personnel : chacun peut consulter son compte et modifier son numéro de téléphone.
 app.get('/api/profile', auth, (req, res) => { const u = req.user
   res.json({ first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone || '', role: u.role, job_title: u.job_title, created_at: u.created_at, last_login_at: u.last_login_at, totp_enabled: u.totp_enabled, admin: adminish(u) }) })
@@ -85,25 +97,29 @@ app.post('/api/profile', auth, wrap(async (req, res) => {
 app.post('/api/change-password', auth, wrap(async (req, res) => {
   const { current, next: np } = req.body
   if (!(await bcrypt.compare(current || '', req.user.password_hash))) return fail(res, 400, 'Mot de passe actuel incorrect')
-  if (!strong(np)) return fail(res, 400, '10 caractères min., avec majuscule, minuscule et chiffre')
+  { const pb = pwProblem(np, req.user); if (pb) return fail(res, 400, 'Mot de passe trop faible : ' + pb) }
   if (np === current) return fail(res, 400, 'Choisissez un mot de passe différent')
   const { rows: [u] } = await q('update users set password_hash=$1, must_change_password=false, token_version=token_version+1 where id=$2 returning *', [await bcrypt.hash(np, 12), req.user.id])
   await newSession(req, res, u); await audit(req, 'PASSWORD_CHANGED', 'users', u.id); res.json({ ok: true })
 }))
 
 // ── Utilisateurs ──
-const tmpPw = () => crypto.randomBytes(9).toString('base64url') + 'aA1'
+const tmpPw = () => { for (;;) { const p = crypto.randomBytes(10).toString('base64url').replace(/[-_]/g, '') + 'aA7#'; if (!pwProblem(p)) return p } }   // conforme à la politique (12+ caractères, spécial)
 app.get('/api/users', need('manage_users'), wrap(async (req, res) => res.json((await q(
-  'select id,email,first_name,last_name,role,status,job_title,last_login_at,created_at,(select concat(c.first_name,\' \',c.last_name) from users c where c.id=u.created_by) created_by from users u where clinic_id=$1 order by created_at', [req.user.clinic_id])).rows)))
+  'select u.id,u.email,u.first_name,u.last_name,u.role,u.status,u.job_title,u.phone,u.totp_enabled,u.mfa_email,u.last_login_at,u.created_at,(select concat(c.first_name,\' \',c.last_name) from users c where c.id=u.created_by) created_by,e.id employee_id,coalesce(e.base_salary,0)::text base_salary,coalesce(e.commission_pct,0)::text commission_pct from users u left join employees e on e.user_id=u.id where u.clinic_id=$1 order by u.created_at', [req.user.clinic_id])).rows)))
 app.post('/api/users', need('manage_users'), wrap(async (req, res) => {
   const { role } = req.body, email = clean(req.body.email)?.toLowerCase(), fn = clean(req.body.first_name), ln = clean(req.body.last_name)
   if (!email || !fn || !ln || !ROLES[role]) return fail(res, 400, 'Champs invalides')
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(res, 400, 'Adresse e-mail invalide')
+  { const dup = (await q('select first_name,last_name from users where lower(trim(email))=$1', [email.trim()])).rows[0]; if (dup) return fail(res, 409, `Cette adresse e-mail est déjà utilisée par ${dup.first_name} ${dup.last_name}`) }
   if (role === 'OWNER' || (role.startsWith('ADMIN') && req.user.role !== 'OWNER')) return fail(res, 403, 'Rôle réservé au propriétaire')
+  const pp = payPlan(req.body); if (pp.err) return fail(res, 400, pp.err)
   const pw = tmpPw()
   try {
     const { rows: [u] } = await q('insert into users(clinic_id,email,password_hash,first_name,last_name,role,job_title,created_by) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',
       [req.user.clinic_id, email, await bcrypt.hash(pw, 12), fn, ln, role, clean(req.body.job_title), req.user.id])
-    await audit(req, 'USER_CREATED', 'users', u.id, { role }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`); res.json({ id: u.id, temporary_password: pw })
+    await q('insert into employees(clinic_id,user_id,first_name,last_name,job_title,base_salary,commission_pct,hire_date) values($1,$2,$3,$4,$5,$6,$7,current_date)', [req.user.clinic_id, u.id, fn, ln, clean(req.body.job_title) || (role === 'DENTIST' ? 'Médecin dentiste' : null), pp.base, pp.pct])
+    await audit(req, 'USER_CREATED', 'users', u.id, { role, base_salary: pp.base, commission_pct: pp.pct }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`); res.json({ id: u.id, temporary_password: pw })
   } catch (e) { if (e.code === '23505') return fail(res, 409, 'Email déjà utilisé'); throw e }
 }))
 const target = wrap(async (req, res, next) => {
@@ -118,6 +134,17 @@ app.post('/api/users/:id/status', need('manage_users'), target, wrap(async (req,
   await q('update users set status=$1, token_version=token_version+1 where id=$2', [s, req.target.id])  // révoque les sessions
   await audit(req, 'USER_STATUS', 'users', req.target.id, { status: s })
   await notify(req.user.clinic_id, 'user_status', 'Statut de compte modifié', `${req.target.email} → ${s} (par ${req.user.email})`); res.json({ ok: true }) }))
+// modifier un compte : nom, fonction, téléphone et rôle (un changement de rôle ferme ses sessions ; rôles ADMIN réservés au propriétaire)
+app.post('/api/users/:id/profile', need('manage_users'), target, wrap(async (req, res) => {
+  const b = req.body, t = req.target, role = b.role || t.role, fn = clean(b.first_name) || t.first_name, ln = clean(b.last_name) || t.last_name, em = clean(b.email)?.toLowerCase().trim() || t.email
+  if (em !== t.email) { if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) return fail(res, 400, 'Adresse e-mail invalide'); const dup = (await q('select first_name,last_name from users where lower(trim(email))=$1 and id<>$2', [em, t.id])).rows[0]; if (dup) return fail(res, 409, `Cette adresse e-mail est déjà utilisée par ${dup.first_name} ${dup.last_name}`) }
+  if (!ROLES[role] || role === 'OWNER') return fail(res, 400, 'Rôle invalide')
+  if (role.startsWith('ADMIN') && req.user.role !== 'OWNER') return fail(res, 403, 'Seul le propriétaire peut nommer un administrateur')
+  await q('update users set first_name=$2,last_name=$3,job_title=$4,phone=$5,role=$6,email=$7,token_version=token_version+case when role<>$6 or email<>$7 then 1 else 0 end where id=$1', [t.id, fn, ln, clean(b.job_title) ?? t.job_title, clean(b.phone, 30) ?? t.phone, role, em])
+  await q('update employees set first_name=$2,last_name=$3,job_title=coalesce($4,job_title) where user_id=$1', [t.id, fn, ln, clean(b.job_title)])
+  await audit(req, 'USER_UPDATED', 'users', t.id, { compte: `${fn} ${ln}`, role_from: t.role, role_to: role, job_title: clean(b.job_title), ...(em !== t.email ? { email_from: t.email, email_to: em } : {}) })
+  if (role !== t.role) await notify(req.user.clinic_id, 'user_role', 'Rôle modifié', `${t.email} : ${t.role} → ${role} (par ${req.user.email})`)
+  res.json({ ok: true, role_changed: role !== t.role }) }))
 app.post('/api/users/:id/reset-password', need('manage_users'), target, wrap(async (req, res) => {
   const pw = tmpPw()
   await q('update users set password_hash=$1, must_change_password=true, token_version=token_version+1 where id=$2', [await bcrypt.hash(pw, 12), req.target.id])
@@ -136,10 +163,12 @@ app.post('/api/users/:id/permissions', need('manage_roles'), target, wrap(async 
 // ── Taux de change (append-only) ──
 app.get('/api/rates', need('view_finances', 'manage_exchange_rates'), wrap(async (req, res) => res.json((await q(
   "select r.id,r.rate::text,r.effective_at,r.justification,concat(u.first_name,' ',u.last_name) by from exchange_rates r join users u on u.id=r.created_by where r.clinic_id=$1 order by effective_at desc, r.created_at desc limit 100", [req.user.clinic_id])).rows)))
-app.post('/api/rates', need('manage_exchange_rates'), wrap(async (req, res) => {
-  const r = String(req.body.rate ?? ''); if (!/^\d{1,9}(\.\d{1,6})?$/.test(r) || Number(r) <= 0) return fail(res, 400, 'Taux invalide')
+const canRate = req => req.perms.has('manage_exchange_rates') || ['OWNER', 'ADMIN', 'ADMIN_FINANCIER'].includes(req.user.role)
+app.post('/api/rates', need(), wrap(async (req, res) => {
+  if (!canRate(req)) return fail(res, 403, 'Permission refusée')
+  const r = String(req.body.rate ?? '').replace(',', '.').trim(); if (!/^\d{1,9}(\.\d{1,6})?$/.test(r) || Number(r) <= 0) return fail(res, 400, 'Taux invalide')
   const { rows: [x] } = await q('insert into exchange_rates(clinic_id,rate,justification,created_by) values($1,$2,$3,$4) returning id', [req.user.clinic_id, r, clean(req.body.justification, 300), req.user.id])
-  await audit(req, 'RATE_SET', 'exchange_rates', x.id, { rate: r }); res.json({ ok: true }) }))
+  await audit(req, 'RATE_SET', 'exchange_rates', x.id, { rate: r }); await notify(req.user.clinic_id, 'rate_changed', 'Taux du jour modifié', `1 USD = ${r} HTG (par ${req.user.first_name} ${req.user.last_name})`, 'view_finances'); res.json({ ok: true, rate: Number(r) }) }))
 
 // ── Patients ──
 // Recherche : chaque mot saisi doit se retrouver dans le nom, le prénom, le téléphone ou le n° de dossier (« jean dupont », « DL-K7M2 »…).
@@ -190,10 +219,27 @@ app.get('/api/dashboard', need(), wrap(async (req, res) => {
   if (req.perms.has('manage_treatment_plans')) out.plans_in_progress = +(await q("select count(*) n from treatment_plans where clinic_id=$1 and status in ('approved','in_progress')", [c])).rows[0].n
   if (req.perms.has('manage_prostheses')) out.prostheses_in_progress = +(await q("select count(*) n from prostheses where clinic_id=$1 and step<>'placed'", [c])).rows[0].n
   res.json(out) }))
+app.get('/api/audit/summary', need('view_audit_logs'), wrap(async (req, res) => { const c = req.user.clinic_id, one = async (sql, p = [c]) => (await q(sql, p)).rows[0]
+  const SENS = "'USER_CREATED','USER_UPDATED','USER_STATUS','PASSWORD_RESET','PERMISSION_CHANGED','SESSIONS_REVOKED','SECURITY_SETTINGS','INVOICE_CANCELLED','INVOICE_CORRECTED','PAYMENT_VOIDED','PATIENT_ARCHIVED','RESTORE_REQUESTED','BACKUP_DOWNLOADED','CLOUD_CONFIGURED','CLOUD_IMPORTED','REATTRIBUTED','EMPLOYEE_PAY','COMMISSION_RATE','RATE_SET','DOCUMENT_ARCHIVED','MFA_EMAIL_ENABLED','MFA_EMAIL_DISABLED','ACCESS_CODE_ISSUED','MAIL_SETTINGS','DOCTOR_SCHEDULE'"
+  const k = await one(`select count(*) filter (where created_at >= current_date)::int today, count(*) filter (where created_at >= now()-interval '7 days')::int week, count(distinct user_id) filter (where created_at >= current_date)::int users_today, count(*) filter (where action in (${SENS}) and created_at >= now()-interval '7 days')::int sensitive from audit_logs where clinic_id=$1`)
+  const fails = (await q("select coalesce(nullif(email,''),'inconnu') email, count(*)::int n, max(created_at) last, string_agg(distinct host(ip), ', ') ips from login_history where (clinic_id=$1 or clinic_id is null) and not success and created_at >= now()-interval '7 days' group by 1 order by n desc limit 8", [c])).rows
+  const okLogins = (await one("select count(*)::int n from login_history where (clinic_id=$1 or clinic_id is null) and success and created_at >= now()-interval '7 days'")).n
+  const cl = await one('select open_time,close_time from clinics where id=$1')
+  const after = (await q(`select concat(u.first_name,' ',u.last_name) who, count(*)::int n, max(a.created_at) last from audit_logs a join users u on u.id=a.user_id where a.clinic_id=$1 and a.created_at >= now()-interval '7 days' and ((a.created_at at time zone 'America/Port-au-Prince')::time < $2::time - interval '1 hour' or (a.created_at at time zone 'America/Port-au-Prince')::time > $3::time + interval '2 hours') and a.action not in ('BACKUP_CREATED','CLOUD_SYNC') group by 1 order by n desc limit 5`, [c, cl?.open_time || '08:00', cl?.close_time || '17:00'])).rows
+  const top = (await q("select concat(u.first_name,' ',u.last_name) who, u.role, count(*)::int n from audit_logs a join users u on u.id=a.user_id where a.clinic_id=$1 and a.created_at >= now()-interval '7 days' group by 1,2 order by n desc limit 6", [c])).rows
+  const cats = (await q("select split_part(action,'_',1) cat, count(*)::int n from audit_logs where clinic_id=$1 and created_at >= now()-interval '7 days' group by 1 order by n desc", [c])).rows
+  const sensitive = (await q(`select a.id,a.action,a.details,a.created_at,concat(u.first_name,' ',u.last_name) who from audit_logs a left join users u on u.id=a.user_id where a.clinic_id=$1 and a.action in (${SENS}) order by a.id desc limit 8`, [c])).rows
+  const views = (await one("select count(*)::int n, count(distinct user_id)::int u from audit_logs where clinic_id=$1 and action in ('RECORD_VIEWED','DOCUMENT_VIEWED','PATIENT_PDF') and created_at >= current_date")).n
+  const bk = await one("select max(created_at) last, count(*) filter (where action='BACKUP_FAILED' and created_at >= now()-interval '7 days')::int failed from audit_logs where clinic_id=$1 and action in ('BACKUP_CREATED','BACKUP_FAILED')")
+  res.json({ kpi: { ...k, failed_logins: fails.reduce((a, f) => a + f.n, 0), ok_logins: okLogins, record_views_today: views }, fails, after_hours: after, top, cats, sensitive, backup: bk, hours: cl }) }))
 app.get('/api/audit', need('view_audit_logs'), wrap(async (req, res) => res.json((await q(
-  "select a.id,a.action,a.table_name,a.created_at,concat(u.first_name,' ',u.last_name) who from audit_logs a left join users u on u.id=a.user_id where a.clinic_id=$1 order by a.id desc limit 100", [req.user.clinic_id])).rows)))
+  `select a.id,a.action,a.table_name,a.record_id,a.details,host(a.ip) ip,a.created_at,a.user_id,concat(u.first_name,' ',u.last_name) who,u.role from audit_logs a left join users u on u.id=a.user_id where a.clinic_id=$1 and ($2::bigint is null or a.id < $2::bigint)
+    and ($4::uuid is null or a.user_id=$4) and ($5::text is null or a.action like any(string_to_array($5, ','))) and ($6::date is null or a.created_at >= $6::date) and ($7::date is null or a.created_at < $7::date + 1)
+    and ($8::text is null or a.action ilike '%'||$8||'%' or a.details::text ilike '%'||$8||'%' or concat(u.first_name,' ',u.last_name) ilike '%'||$8||'%') order by a.id desc limit $3`, [req.user.clinic_id, /^\d+$/.test(req.query.before || '') ? req.query.before : null, Math.min(200, Math.max(1, parseInt(req.query.limit) || 100)),
+    /^[0-9a-f-]{36}$/.test(req.query.user || '') ? req.query.user : null, /^[A-Z_%,]+$/.test(req.query.actions || '') ? req.query.actions : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null, clean(req.query.q, 60) || null])).rows)))
 
-const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
+const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
+app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
 app.use('/api', (req, res) => fail(res, 404, 'Route inconnue'))
 app.use(express.static(config.frontendDir, { etag: true, setHeaders: (res, f) => { if (/.(js|css|html)$/.test(f)) res.setHeader('Cache-Control', 'no-cache') } }))   // l'interface est toujours revérifiée : jamais d'ancienne version affichée
 app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail(res, 413, 'Fichier trop volumineux (10 Mo maximum)') : fail(res, 500, 'Erreur serveur') })
@@ -201,5 +247,8 @@ app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail
   try { await migrate(c, () => {}); if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {}) } finally { c.release() } }
 const server = app.listen(config.port, () => console.log('DENTAL LIGHT prêt sur le port', config.port))
 if (process.env.NODE_ENV !== 'test') startScheduler()   // sauvegarde automatique quotidienne
+if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
+if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)
+if (process.env.NODE_ENV !== 'test') startAlerts()   // notifications automatiques (toutes les 30 minutes)
 const shutdown = sig => { console.log(`${sig} reçu : arrêt propre…`); server.close(() => pool.end().finally(() => process.exit(0))); setTimeout(() => process.exit(1), 10000).unref() }
 process.on('SIGTERM', () => shutdown('SIGTERM')); process.on('SIGINT', () => shutdown('SIGINT'))

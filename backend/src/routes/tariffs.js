@@ -12,7 +12,8 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     await seed(req.user.clinic_id)
     const all = req.query.all === '1' && canEdit(req)
     const rows = (await q(`select id,code,name,category,price::float8 price,currency,note,sort,active from tariffs where clinic_id=$1 ${all ? '' : 'and active'} order by sort,name`, [req.user.clinic_id])).rows
-    res.json({ rows, rate: await rateNow(req.user.clinic_id), can_edit: canEdit(req) }) }))
+    const last = (await q("select r.effective_at,u.first_name||' '||u.last_name by from exchange_rates r left join users u on u.id=r.created_by where r.clinic_id=$1 and r.effective_at<=now() order by r.effective_at desc, r.created_at desc limit 1", [req.user.clinic_id])).rows[0]
+    res.json({ rows, rate: await rateNow(req.user.clinic_id), rate_at: last?.effective_at || null, rate_by: last?.by || null, can_edit: canEdit(req), can_rate: req.perms.has('manage_exchange_rates') || ['OWNER', 'ADMIN', 'ADMIN_FINANCIER'].includes(req.user.role) }) }))
   const read = b => { const name = clean(b.name, 120), cur = b.currency === 'USD' ? 'USD' : 'HTG', p = b.price === '' || b.price == null ? null : String(b.price).replace(',', '.')
     if (!name) return { err: 'Nom du soin requis' }; if (p !== null && !AMT.test(p)) return { err: 'Prix invalide (laissez vide si « à déterminer »)' }
     return { code: clean(b.code, 20), name, category: clean(b.category, 60), price: p, currency: cur, note: clean(b.note, 200), sort: Number.isInteger(+b.sort) ? +b.sort : 100 } }

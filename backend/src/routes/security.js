@@ -9,8 +9,27 @@ const key = () => crypto.createHash('sha256').update('dl-totp:' + process.env.JW
 const enc = t => { const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', key(), iv), ct = Buffer.concat([c.update(t, 'utf8'), c.final()]); return Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64') }
 const dec = s => { const b = Buffer.from(s, 'base64'), d = crypto.createDecipheriv('aes-256-gcm', key(), b.subarray(0, 12)); d.setAuthTag(b.subarray(12, 28)); return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8') }
 export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
+// ── codes à usage unique : envoyés par e-mail, ou délivrés par la direction (fonctionnent sans Internet) ──
+import { sendMail } from '../lib/mail.js'
+export const maskEmail = e => String(e || '').replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b)
+export const mailCfg = async (q, clinicId) => { const s = (await q('select smtp from clinics where id=$1', [clinicId])).rows[0]?.smtp; return s?.host && s?.from ? { ...s, pass: s.pass_enc ? dec(s.pass_enc) : '' } : null }
+const newCode = async (q, userId, kind, minutes, digits = 6, by = null) => { const code = String(crypto.randomInt(0, 10 ** digits)).padStart(digits, '0')
+  await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [userId, kind])
+  await q('insert into login_codes(user_id,kind,code_hash,expires_at,created_by) values($1,$2,$3,now()+make_interval(mins=>$4),$5)', [userId, kind, sha(userId + ':' + code), minutes, by]); return code }
+export async function sendEmailCode(q, u, kind = 'email') {
+  const cfg = await mailCfg(q, u.clinic_id); if (!cfg) return { sent: false, reason: "Aucun serveur d'e-mail n'est configuré par la clinique" }
+  const last = (await q("select created_at from login_codes where user_id=$1 and kind=$2 order by created_at desc limit 1", [u.id, kind])).rows[0]; if (last && Date.now() - new Date(last.created_at) < 30e3) return { sent: true, recent: true, to: maskEmail(u.email), wait: true }
+  const code = await newCode(q, u.id, kind, 10)
+  try { await sendMail({ ...cfg, to: u.email, subject: `${code} — votre code de connexion DENTAL LIGHT`, text: `Bonjour ${u.first_name},\n\nVotre code de connexion à usage unique : ${code}\nIl est valable 10 minutes et ne peut servir qu'une fois.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction de la clinique.`,
+      html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e3e8ef;border-radius:14px"><h2 style="color:#0f2a5c;margin:0 0 8px">DENTAL LIGHT</h2><p>Bonjour ${u.first_name},</p><p>Votre code de connexion à usage unique :</p><p style="font-size:32px;letter-spacing:8px;font-weight:bold;color:#1d6fd8;margin:12px 0">${code}</p><p style="color:#5b6778">Valable 10 minutes, utilisable une seule fois. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction.</p></div>` })
+    return { sent: true, to: maskEmail(u.email) } }
+  catch (e) { await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [u.id, kind]); return { sent: false, reason: e.message } } }
+export async function verifyCode(q, u, code, kinds = ['email', 'owner']) { code = String(code || '').replace(/\s/g, ''); if (!/^\d{6,8}$/.test(code)) return false
+  const r = (await q("select id,code_hash,attempts from login_codes where user_id=$1 and kind=any($2) and used_at is null and expires_at>now() order by created_at desc limit 3", [u.id, kinds])).rows
+  for (const x of r) { if (x.attempts >= 5) continue; if (x.code_hash === sha(u.id + ':' + code)) { await q('update login_codes set used_at=now() where id=$1', [x.id]); return true } }
+  if (r.length) await q('update login_codes set attempts=attempts+1 where id=any($1)', [r.map(x => x.id)]); return false }
 export async function verifySecondFactor(q, u, code) {   // TOTP (usage unique par pas de 30 s) ou code de secours (usage unique)
-  code = String(code || '').replace(/\s/g, ''); if (!u.totp_secret_enc) return false
+  code = String(code || '').replace(/\s/g, ''); if (await verifyCode(q, u, code)) return true; if (!u.totp_secret_enc) return false
   if (/^\d{6}$/.test(code)) { const step = totpStep(b32dec(dec(u.totp_secret_enc)), code, Number(u.totp_last_step || 0)); return step !== null && (await q('update users set totp_last_step=$2 where id=$1 and coalesce(totp_last_step,0)<$2', [u.id, step])).rowCount === 1 }
   return (await q('update recovery_codes set used_at=now() where user_id=$1 and code_hash=$2 and used_at is null', [u.id, sha(code.toLowerCase())])).rowCount === 1 }
 export default function (app, { q, pool, need, auth, audit, fail, wrap, clean }) {
@@ -26,7 +45,7 @@ export default function (app, { q, pool, need, auth, audit, fail, wrap, clean })
     for (const c of codes) await q('insert into recovery_codes(user_id,code_hash) values($1,$2)', [u.id, sha(c)])
     await audit(req, '2FA_ENABLED', 'users', u.id); await notify(q, u.clinic_id, '2fa_enabled', 'Double authentification activée', u.email); res.json({ recovery_codes: codes }) }))
   app.post('/api/2fa/disable', auth, wrap(async (req, res) => {
-    const u = req.user; if (!u.totp_enabled) return fail(res, 409, 'Non activée'); if (adminish(u) && u.req2fa) return fail(res, 409, 'La double authentification est imposée par la clinique pour votre rôle')
+    const u = req.user; if (!u.totp_enabled) return fail(res, 409, 'Non activée'); if (adminish(u) && u.req2fa && !u.mfa_email) return fail(res, 409, 'La double authentification est imposée par la clinique pour votre rôle')
     if (!(await bcrypt.compare(req.body.password || '', u.password_hash)) || !(await verifySecondFactor(q, u, req.body.code))) return fail(res, 401, 'Mot de passe ou code invalide')
     await q('update users set totp_enabled=false, totp_secret_enc=null, totp_pending_enc=null where id=$1', [u.id]); await q('delete from recovery_codes where user_id=$1', [u.id])
     await audit(req, '2FA_DISABLED', 'users', u.id); await notify(q, u.clinic_id, '2fa_disabled', 'Double authentification désactivée', u.email); res.json({ ok: true }) }))
@@ -35,6 +54,27 @@ export default function (app, { q, pool, need, auth, audit, fail, wrap, clean })
     const t = /^[0-9a-f-]{36}$/.test(req.params.id) ? (await q('select * from users where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0] : null; if (!t || t.role === 'OWNER') return fail(res, 403, 'Compte non concerné')
     await q('update users set totp_enabled=false, totp_secret_enc=null, totp_pending_enc=null, token_version=token_version+1 where id=$1', [t.id]); await q('delete from recovery_codes where user_id=$1', [t.id])
     await audit(req, '2FA_RESET', 'users', t.id); await notify(q, t.clinic_id, '2fa_reset', 'Double authentification réinitialisée', t.email); res.json({ ok: true }) }))
+  // ── serveur d'e-mail de la clinique (propriétaire) ──
+  app.get('/api/settings/mail', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); const s = (await q('select smtp from clinics where id=$1', [req.user.clinic_id])).rows[0]?.smtp || {}
+    res.json({ host: s.host || '', port: s.port || 587, user: s.user || '', from: s.from || '', has_pass: !!s.pass_enc, configured: !!(s.host && s.from) }) }))
+  app.put('/api/settings/mail', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); const b = req.body, cur = (await q('select smtp from clinics where id=$1', [req.user.clinic_id])).rows[0]?.smtp || {}
+    const host = clean(b.host, 120), port = parseInt(b.port) || 587, from = clean(b.from, 120)?.toLowerCase(); if (!host || !/^[a-z0-9.-]+$/i.test(host)) return fail(res, 400, 'Serveur SMTP invalide (ex : smtp.gmail.com)'); if (![25, 465, 587, 2525].includes(port)) return fail(res, 400, 'Port SMTP : 465 (SSL) ou 587 (STARTTLS)'); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from || '')) return fail(res, 400, "Adresse d'expédition invalide")
+    const s = { host, port, user: clean(b.user, 120) || '', from, pass_enc: b.pass ? enc(String(b.pass)) : cur.pass_enc }; await q('update clinics set smtp=$2 where id=$1', [req.user.clinic_id, s]); await audit(req, 'MAIL_SETTINGS', 'clinics', req.user.clinic_id, { host, port, from }); res.json({ ok: true }) }))
+  app.post('/api/settings/mail/test', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); const cfg = await mailCfg(q, req.user.clinic_id); if (!cfg) return fail(res, 400, "Configurez d'abord le serveur d'e-mail")
+    try { await sendMail({ ...cfg, to: req.user.email, subject: 'Test DENTAL LIGHT : envoi des e-mails opérationnel', text: "Ce message confirme que DENTAL LIGHT peut envoyer les codes de connexion par e-mail." }); res.json({ ok: true, to: req.user.email }) } catch (e) { fail(res, 502, e.message) } }))
+  // ── double authentification par e-mail ──
+  app.post('/api/2fa/email/start', auth, wrap(async (req, res) => { const r = await sendEmailCode(q, req.user, 'setup'); if (!r.sent) return fail(res, 400, r.reason); res.json(r) }))
+  app.post('/api/2fa/email/confirm', auth, wrap(async (req, res) => { if (!(await verifyCode(q, req.user, req.body.code, ['setup']))) return fail(res, 400, 'Code invalide ou expiré')
+    await q('update users set mfa_email=true where id=$1', [req.user.id]); await audit(req, 'MFA_EMAIL_ENABLED', 'users', req.user.id); res.json({ ok: true }) }))
+  app.post('/api/2fa/email/disable', auth, wrap(async (req, res) => { if (!(await bcrypt.compare(req.body.password || '', req.user.password_hash))) return fail(res, 400, 'Mot de passe incorrect')
+    if (adminish(req.user) && req.user.req2fa && !req.user.totp_enabled) return fail(res, 409, "La double authentification est obligatoire pour votre rôle : activez d'abord l'application d'authentification")
+    await q('update users set mfa_email=false where id=$1', [req.user.id]); await audit(req, 'MFA_EMAIL_DISABLED', 'users', req.user.id); res.json({ ok: true }) }))
+  // ── code d'accès à usage unique délivré par la direction (sans Internet : téléphone perdu, e-mail impossible) ──
+  app.post('/api/users/:id/access-code', need('manage_users'), wrap(async (req, res) => {
+    const t = /^[0-9a-f-]{36}$/.test(req.params.id) ? (await q('select * from users where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0] : null; if (!t || t.role === 'OWNER' || t.id === req.user.id) return fail(res, 403, 'Compte non concerné')
+    if (t.role.startsWith('ADMIN') && req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); if (!t.totp_enabled && !t.mfa_email) return fail(res, 409, "Ce compte n'utilise pas la double authentification : le mot de passe suffit")
+    const code = await newCode(q, t.id, 'owner', 30, 8, req.user.id); await audit(req, 'ACCESS_CODE_ISSUED', 'users', t.id, { compte: `${t.first_name} ${t.last_name}`, validite: '30 min' })
+    await notify(q, req.user.clinic_id, 'access_code', "Code d'accès délivré", `${t.email} (par ${req.user.email}) : code à usage unique valable 30 minutes`); res.json({ code, minutes: 30 }) }))
   app.get('/api/settings/security', need('manage_settings'), wrap(async (req, res) => res.json((await q('select inactivity_logout_minutes inactivity_minutes, require_2fa from clinics where id=$1', [req.user.clinic_id])).rows[0])))
   app.put('/api/settings/security', need('manage_settings'), wrap(async (req, res) => {
     if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); const m = parseInt(req.body.inactivity_minutes); if (!(m >= 1 && m <= 480) || typeof req.body.require_2fa !== 'boolean') return fail(res, 400, 'Paramètres invalides (1 à 480 minutes)')

@@ -1,5 +1,6 @@
 // Fenêtres modales modernes : remplacent confirm(), prompt() et alert() du navigateur.
 import { ic } from './icons.js'
+import { buttonLoading } from './loaders.js'
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const collect = md => { const o = {}; md.querySelectorAll('[name]').forEach(e => {
   if (e.type === 'radio') { if (e.checked) o[e.name] = e.value }
@@ -37,7 +38,7 @@ function dialog({ title, sub = '', icon = 'info', tone = 'info', html = '', butt
     buttons.forEach(b => { const el = document.createElement('button'); el.type = 'button'; el.className = b.cls || ''; el.innerHTML = b.label
       el.onclick = async () => { if (!b.collect) return b.value === null && dirty ? tryClose() : close(b.value)
         const bad = md.querySelector('input:invalid, select:invalid, textarea:invalid'); if (bad) { bad.reportValidity(); bad.focus(); return }
-        const v = collect(md); if (b.submit) { el.disabled = true; err.hidden = true; try { await b.submit(v) } catch (x) { err.textContent = x.message || 'Erreur'; err.hidden = false; el.disabled = false; return } } close(v) }
+        const v = collect(md); if (b.submit) { err.hidden = true; const restore = buttonLoading(el); try { await b.submit(v) } catch (x) { restore(); err.textContent = x.message || 'Erreur'; err.hidden = false; return } } close(v) }
       foot.appendChild(el) })
     setTimeout(() => (md.querySelector('.mbd input:not([type=radio]):not([type=checkbox]),.mbd textarea,.mbd select') || foot.querySelector('.pri'))?.focus(), 30); onOpen?.(md) }) }
 const DANGER = /annul|bloqu|archiv|supprim|désactiv|refus|réinitialis/i

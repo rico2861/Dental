@@ -153,10 +153,10 @@ export const payslipPdf = (doc, { clinic, emp, r, pays }) => {
   const st = { to_pay: ['À PAYER', C.warn], partial: ['PARTIELLEMENT PAYÉ', C.warn], paid: ['PAYÉ', C.ok] }[r.status] || [String(r.status).toUpperCase(), C.muted]
   parties(doc, 'SALARIÉ', [`${emp.last_name} ${emp.first_name}`, emp.job_title || 'Fonction non précisée', emp.hire_date && `Embauché le ${fday(emp.hire_date)}`], st)
   table(doc, [{ t: 'Élément', w: 349 }, { t: 'Montant', w: 150, a: 'right' }],
-    [['Salaire de base', m(r.base, 'HTG')], ['Commissions', m(r.commissions, 'HTG')], ['Primes', m(r.bonuses, 'HTG')], ['Déductions', '- ' + m(r.deductions, 'HTG')], ['Avances déduites', '- ' + m(r.advances, 'HTG')]])
+    [['Salaire de base', m(r.base, 'HTG')], ['Commissions sur actes', m(r.commissions, 'HTG')], ['Primes', m(r.bonuses, 'HTG')], ['SALAIRE BRUT', m(r.base + r.commissions + r.bonuses, 'HTG')], ...(r.deduction_details || []).map(d => [`Retenue : ${d.label}${d.kind === 'pct' ? ` (${String(d.value).replace('.', ',')} % du brut)` : ''}`, '- ' + m(d.amount, 'HTG')]), ...(Number(r.other_deductions) ? [['Autres déductions', '- ' + m(Number(r.other_deductions), 'HTG')]] : []), ['Avances déduites', '- ' + m(r.advances, 'HTG')]])
   totals(doc, [['NET À PAYER', m(r.net, 'HTG'), 'brand'], ['Déjà versé', m(r.paid, 'HTG')], ['Reste à verser', m(rest, 'HTG'), 'soft']])
   if (pays.length) { doc.moveDown(.6); section(doc, 'VERSEMENTS'); table(doc, [{ t: 'Date', w: 160 }, { t: 'Mode', w: 189 }, { t: 'Montant', w: 150, a: 'right' }], pays.map(p => [fd(p.paid_at), p.method, m(p.amount, 'HTG')])) }
-  doc.moveDown(.4); note(doc, 'Déductions saisies manuellement (aucun taux d\'impôt n\'est appliqué automatiquement).')
+  doc.moveDown(.4); note(doc, 'Retenues appliquées selon la fiche de l\'employé (Personnel & paie) ; les montants retenus sont à reverser aux organismes concernés.')
   signature(doc, "Signature de l'employé")
   footer(doc, `${clinic?.name || ''} · Bulletin de paie ${label} · Document confidentiel.`)
 }

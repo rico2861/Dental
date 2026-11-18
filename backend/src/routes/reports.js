@@ -45,16 +45,31 @@ const CAT = {
   profit_treatments: { perm: 'view_finances', title: 'Revenus par type de soin (sans coût direct rattaché)', cols: 'description:Intervention,n:Réalisées:n,revenue:Revenus HTG:n',
     sql: `select i.description,count(*)::int n,sum(i.price)::text revenue from treatment_plan_items i join treatment_plans p on p.id=i.plan_id where p.clinic_id=$1 and i.status='done' and ${BT('i.done_at')} group by i.description order by sum(i.price) desc` }
 }
+// Mes actes et commissions : chaque facture du médecin, ce qui a été facturé et encaissé sur la période, et la commission correspondante
+// (même règle que la page Médecins : taux du médecin × montant facturé ou encaissé selon le réglage de la clinique, dollars convertis au taux de la facture)
+CAT.my_acts = { perm: 'view_medical_records', doctorOnly: 1, title: 'Mes actes et commissions', cols: 'date:Date,invoice:Facture,patient:Patient,acte:Acte,billed_htg:Facturé (HTG):n,collected_htg:Encaissé (HTG):n,pct:Taux %:n,commission:Commission (HTG):n',
+  sql: `with b as (select commission_basis basis from clinics where id=$1), e as (select coalesce((select commission_pct from employees where user_id=$4 limit 1),0)::numeric pct),
+    x as (select i.id,i.number,i.created_at,i.patient_id,case when ${BT('i.created_at')} then i.total*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end else 0 end billed,
+      coalesce((select sum(y.amount_htg) from payments y where y.invoice_id=i.id and y.voided_at is null and ${BT('y.created_at')}),0) collected from invoices i where i.clinic_id=$1 and i.doctor_id=$4 and i.kind='invoice' and i.status<>'cancelled')
+    select ${L('x.created_at')}::text date,x.number invoice,p.last_name||' '||p.first_name patient,(select string_agg(description,', ') from invoice_items where invoice_id=x.id) acte,x.billed::numeric(14,2)::text billed_htg,x.collected::numeric(14,2)::text collected_htg,e.pct::text pct,
+      round((case when b.basis='billed' then x.billed else x.collected end)*e.pct/100,2)::text commission from x join patients p on p.id=x.patient_id cross join b cross join e where x.billed>0 or x.collected>0 order by x.created_at` }
+// Un médecin simple (rôle DENTIST) ne voit que ses propres données dans les rapports
+const MINE = { patients: ['Mes patients', s => s.replace('from patients where clinic_id=$1', 'from patients where clinic_id=$1 and (primary_doctor_id=$4 or exists(select 1 from consultations c where c.patient_id=patients.id and c.doctor_id=$4) or exists(select 1 from invoices i where i.patient_id=patients.id and i.doctor_id=$4))')],
+  consultations: ['Mes consultations', s => s.replace('where c.clinic_id=$1', 'where c.clinic_id=$1 and c.doctor_id=$4')], doctors: ['Mon activité', s => s.replace("where u.clinic_id=$1 and u.status='active'", "where u.clinic_id=$1 and u.id=$4 and u.status='active'")] }
+for (const [k, [title, fn]] of Object.entries(MINE)) { CAT[k].mineTitle = title; CAT[k].mine = fn(CAT[k].sql); if (CAT[k].mine === CAT[k].sql) throw new Error('Rapport personnel non restreint : ' + k) }
+const DOC_ROLES = ['DENTIST', 'OWNER', 'ADMIN_MEDICAL', 'ADMIN'], selfOnly = req => req.user.role === 'DENTIST'
+const visible = (req, r) => req.perms.has(r.perm) && (!r.doctorOnly || DOC_ROLES.includes(req.user.role)) && (!selfOnly(req) || r.mine || r.doctorOnly)
 for (const r of Object.values(CAT)) r.cols = r.cols.split(',').map(s => s.split(':'))
 const safe = v => { v = v == null ? '' : String(v); return /^[=+\-@\t\r]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v) ? "'" + v : v }
 const csv = (cols, rows) => '\ufeffsep=;\r\n' + [cols.map(c => c[1]), ...rows.map(r => cols.map(c => safe(r[c[0]])))].map(l => l.map(v => /[",;\n\r]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : v).join(';')).join('\r\n')
 export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
-  app.get('/api/reports', need(), (req, res) => res.json(Object.entries(CAT).filter(([, r]) => req.perms.has(r.perm)).map(([key, r]) => ({ key, title: r.title, noRange: !!r.noRange }))))
+  app.get('/api/reports', need(), (req, res) => res.json(Object.entries(CAT).filter(([, r]) => visible(req, r)).map(([key, r]) => ({ key, title: selfOnly(req) && r.mineTitle || r.title, noRange: !!r.noRange }))))
   app.get('/api/reports/:type', need(), wrap(async (req, res) => {
-    const r = CAT[req.params.type]; if (!r || !req.perms.has(r.perm)) return fail(res, 403, 'Rapport non autorisé')
+    const r0 = CAT[req.params.type]; if (!r0 || !visible(req, r0)) return fail(res, 403, 'Rapport non autorisé')
+    const own = selfOnly(req) && r0.mine, r = { ...r0, sql: own ? r0.mine : r0.sql, title: own ? r0.mineTitle : r0.title }, uid = (own || r0.doctorOnly) ? [req.user.id] : []
     const to = D(req.query.to) || new Date().toISOString().slice(0, 10), from = D(req.query.from) || to.slice(0, 8) + '01', fmt = req.query.format || 'json'
     if (fmt !== 'json' && !req.perms.has('export_reports')) return fail(res, 403, "Permission d'export requise")
-    let rows = (await q(r.sql, r.noRange ? [req.user.clinic_id] : [req.user.clinic_id, from, to])).rows.slice(0, 20000)
+    let rows = (await q(r.sql, r.noRange ? [req.user.clinic_id] : [req.user.clinic_id, from, to, ...uid])).rows.slice(0, 20000)
     if (req.params.type === 'stock') rows = rows.map(x => ({ ...x, to_order: Number(x.stock) <= Number(x.min_stock) ? 'Oui' : '' }))
     const name = `${req.params.type}-${from}_${to}`, head = r.noRange ? r.title : `${r.title} — du ${from} au ${to}`
     if (fmt === 'json') return res.json({ title: head, cols: r.cols, rows: rows.slice(0, 500), total: rows.length })
@@ -66,6 +81,35 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     fail(res, 400, 'Format inconnu') }))
 
   // ── Dashboard propriétaire ──
+  // ── Statistiques financières détaillées (page Vue financière) ──
+  app.get('/api/finance/stats', need('view_finances'), wrap(async (req, res) => {
+    const c = req.user.clinic_id, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toISOString().slice(0, 10), span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
+    const { rows: [rg] } = await q(`select date_trunc('${per}',$1::date)::date::text f,(date_trunc('${per}',$1::date)+interval '${span}' - interval '1 day')::date::text t,(date_trunc('${per}',$1::date)-interval '${span}')::date::text pf,(date_trunc('${per}',$1::date)-interval '1 day')::date::text pt`, [ref])
+    const P = [c, rg.f, rg.t], PP = [c, rg.pf, rg.pt], rows = async (sql, p = P) => (await q(sql, p)).rows, one = async (sql, p = P) => (await q(sql, p)).rows[0]
+    const HTG = "i.total*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end"
+    const totals = p => one(`select (select coalesce(sum(amount_htg),0) from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')})::float8 revenue,
+        (select coalesce(sum(amount_htg),0) from expenses where clinic_id=$1 and status='paid' and ${BT('paid_at')})::float8 expenses,
+        (select coalesce(sum(${HTG}),0) from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')})::float8 invoiced,
+        (select count(*) from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')})::int invoices,
+        (select count(*) from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')})::int payments,
+        (select coalesce(sum(i.discount*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end),0) from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')})::float8 discounts,
+        (select count(distinct i.patient_id) from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')})::int patients`, p)
+    const [cur, prev] = await Promise.all([totals(P), totals(PP)])
+    const PAID = "coalesce((select sum(y.applied_amount) from payments y where y.invoice_id=i.id and y.voided_at is null),0)"
+    const [daily, methods, doctors, services, status, aging, debtors, currency, expCat, months12, weekday] = await Promise.all([
+      rows(`select ${L('created_at')}::text d, sum(amount_htg)::float8 v from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')} group by 1 order by 1`),
+      rows(`select coalesce(method,'autre') label, sum(amount_htg)::float8 v, count(*)::int n from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')} group by 1 order by v desc`),
+      rows(`select coalesce(u.first_name||' '||u.last_name,'Non attribué') label, sum(y.amount_htg)::float8 v from payments y join invoices i on i.id=y.invoice_id left join users u on u.id=i.doctor_id where y.clinic_id=$1 and y.voided_at is null and ${BT('y.created_at')} group by 1 order by v desc limit 8`),
+      rows(`select split_part(it.description,' · ',1) label, sum(it.line_total*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end)::float8 v, count(*)::int n from invoice_items it join invoices i on i.id=it.invoice_id where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')} group by 1 order by v desc limit 8`),
+      one(`select count(*) filter (where ${PAID} >= i.total - 0.004)::int paid, count(*) filter (where ${PAID} > 0 and ${PAID} < i.total - 0.004)::int partial, count(*) filter (where ${PAID} = 0)::int unpaid,
+          coalesce(sum(${PAID}) filter (where true),0)::float8 paid_amt, coalesce(sum(i.total - ${PAID}),0)::float8 due_amt from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and ${BT('i.created_at')}`),
+      rows(`select case when age <= 30 then '0–30 jours' when age <= 60 then '31–60 jours' when age <= 90 then '61–90 jours' else 'Plus de 90 jours' end label, sum(bal)::float8 v, count(*)::int n, min(age) a from (select current_date - i.created_at::date age, (i.total - ${PAID})*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end bal from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status='issued') x where bal > 0.004 group by 1 order by min(age)`, [c]),
+      rows(`select p.id, p.last_name||' '||p.first_name label, sum((i.total - ${PAID})*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end)::float8 v, max(current_date - i.created_at::date)::int oldest from invoices i join patients p on p.id=i.patient_id where i.clinic_id=$1 and i.kind='invoice' and i.status='issued' and i.total - ${PAID} > 0.004 group by p.id order by v desc limit 6`, [c]),
+      rows(`select currency label, sum(amount_htg)::float8 v from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')} group by 1`),
+      rows(`select category label, sum(amount_htg)::float8 v from expenses where clinic_id=$1 and status='paid' and ${BT('paid_at')} group by 1 order by v desc`),
+      rows(`select to_char(m,'YYYY-MM') m, coalesce((select sum(amount_htg) from payments y where y.clinic_id=$1 and y.voided_at is null and date_trunc('month', y.created_at at time zone ${TZ}) = m),0)::float8 rev, coalesce((select sum(amount_htg) from expenses e where e.clinic_id=$1 and e.status='paid' and date_trunc('month', e.paid_at at time zone ${TZ}) = m),0)::float8 exp from generate_series(date_trunc('month',$2::date)-interval '11 month', date_trunc('month',$2::date), interval '1 month') m order by m`, [c, rg.t]),
+      rows(`select extract(isodow from created_at at time zone ${TZ})::int wd, sum(amount_htg)::float8 v from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')} group by 1 order by 1`)])
+    res.json({ period: { from: rg.f, to: rg.t, prev_from: rg.pf, prev_to: rg.pt, kind: per }, cur, prev, daily, methods, doctors, services, status, aging, debtors, currency, expenses_by_category: expCat, months12, weekday }) }))
   app.get('/api/dashboard/owner', need(), wrap(async (req, res) => {
     const c = req.user.clinic_id, P = req.perms, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toISOString().slice(0, 10)
     const span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
