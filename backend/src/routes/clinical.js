@@ -1,6 +1,7 @@
 import { isAssigned } from '../core/permissions.js'
 import { advice } from '../lib/clinical-advice.js'
 import { billService, validAmounts, actingDoctor, payProblem, syncTeeth } from '../lib/billing-core.js'
+import { sealJson, openJson } from '../lib/protect.js'
 const HK = ['blood_pressure','diabetes','hemophilia','hiv','smoking','alcohol','pregnancy','blood_group','allergies','medications','cardiovascular','pulmonary','epilepsy','stomach','cancer','migraines','other','observations','brushing','motif','scaling_grade','bridge_from','bridge_to','remark']
 const STATES = ['saine','carie','extraite','absente','a_extraire','restauree','couronne','implant','bridge','anomalie']
 const FDI = n => Number.isInteger(n) && ((n >= 11 && n <= 48 && n % 10 >= 1 && n % 10 <= 8 && Math.floor(n / 10) <= 4) || (n >= 51 && n <= 85 && n % 10 >= 1 && n % 10 <= 5))
@@ -27,12 +28,12 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       q("select count(*)::int n from appointments where patient_id=$1 and starts_at>now() and status in ('planned','confirmed')", [p.id])])
     const timeline = [...c.rows.map(x => ({ at: x.consulted_at, text: `Consultation : ${x.reason || ''} ${x.diagnosis ? '— ' + x.diagnosis : ''}`, doctor: x.doctor })),
       ...th.rows.map(x => ({ at: x.recorded_at, text: `Dent ${x.tooth_fdi} : ${x.state}`, doctor: x.doctor }))].sort((a, b) => new Date(b.at) - new Date(a.at))
-    res.json({ patient: p, history: h.rows[0]?.data ?? {}, history_at: h.rows[0]?.updated_at, consultations: c.rows, teeth: t.rows, tooth_log: th.rows, doctors: d.rows, timeline,
-      advice: advice({ h: h.rows[0]?.data ?? {}, teeth: t.rows, consults: c.rows, upcoming: up.rows[0].n, exam: ex.rows[0] }) }) }))
+    res.json({ patient: p, history: openJson(h.rows[0]?.data) ?? {}, history_at: h.rows[0]?.updated_at, consultations: c.rows, teeth: t.rows, tooth_log: th.rows, doctors: d.rows, timeline,
+      advice: advice({ h: openJson(h.rows[0]?.data) ?? {}, teeth: t.rows, consults: c.rows, upcoming: up.rows[0].n, exam: ex.rows[0] }) }) }))
   app.post('/api/patients/:id/history', need('edit_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé')
     const data = {}; for (const k of HK) if (k in req.body) data[k] = typeof req.body[k] === 'boolean' ? req.body[k] : clean(req.body[k], 500)
-    await q('insert into medical_histories(patient_id,clinic_id,data,updated_by) values($1,$2,$3,$4) on conflict(patient_id) do update set data=$3, updated_by=$4, updated_at=now()', [p.id, req.user.clinic_id, data, req.user.id])
+    await q('insert into medical_histories(patient_id,clinic_id,data,updated_by) values($1,$2,$3,$4) on conflict(patient_id) do update set data=$3, updated_by=$4, updated_at=now()', [p.id, req.user.clinic_id, sealJson(data), req.user.id])   // chiffré
     await audit(req, 'MEDICAL_HISTORY_UPDATED', 'medical_histories', p.id); res.json({ ok: true }) }))
   app.post('/api/patients/:id/consultations', need('edit_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé'); const b = req.body

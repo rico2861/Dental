@@ -2,7 +2,7 @@
 // adressées au rôle concerné (permission) : accueil, finances, soins, direction.
 import { q } from '../db/pool.js'
 
-const day = () => new Date().toISOString().slice(0, 10), month = () => new Date().toISOString().slice(0, 7)
+const day = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), month = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7)
 const add = (cid, key, perm, kind, title, text) => q('insert into notifications(clinic_id,perm,kind,title,text,dedupe_key) values($1,$2,$3,$4,$5,$6) on conflict (clinic_id, dedupe_key) where dedupe_key is not null do nothing', [cid, perm, kind, title, text, key])
 const list = (rows, f, n = 4) => rows.slice(0, n).map(f).join(', ') + (rows.length > n ? '…' : '')
 

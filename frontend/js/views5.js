@@ -2,7 +2,7 @@ import { ic } from './icons.js'
 import { head, kpis, kpi as kpiK, tips } from './kit.js'
 export default function install({ $, esc, api, can, toast, render, me }) {
   const M = v => Number(v ?? 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 }), K = v => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? Math.round(v / 1e3) + 'k' : Math.round(v)
-  const F = e => Object.fromEntries(new FormData(e.target)), pid = () => location.hash.split('/')[1], today = () => new Date().toISOString().slice(0, 10)
+  const F = e => Object.fromEntries(new FormData(e.target)), pid = () => location.hash.split('/')[1], today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })
   const fd = d => d ? new Date(d).toLocaleString('fr-FR', { timeZone: 'America/Port-au-Prince', dateStyle: 'short', timeStyle: 'short' }) : '—'
   const COLORS = ['#1d6fd8', '#16a394', '#f5a524', '#7c5cf0', '#e5484d', '#3fb8d9', '#8892a6']
   let rpre = 'm', per = 'month', ref = today(), rep = null, from = today().slice(0, 8) + '01', to = today(), sigDrawn = false

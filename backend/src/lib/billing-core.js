@@ -40,7 +40,7 @@ export async function billService(c, { clinicId, patientId, doctorId, userId, de
     const rn = `REC-${new Date().getFullYear()}-${String((await c.query("select nextval('receipt_seq') n")).rows[0].n).padStart(5, '0')}`
     receipt = (await c.query(`insert into payments(clinic_id,invoice_id,receipt_number,amount,currency,applied_amount,amount_htg,method,idempotency_key,created_by,reference)
       values($1,$2,$3,$4,'HTG',$4,$4,$5,$6,$7,$8) returning id,receipt_number`, [clinicId, inv.id, rn, p / 100, String(method || 'espèces').slice(0, 30), crypto.randomUUID(), userId, reference ? String(reference).slice(0, 80) : null])).rows[0]
-    await c.query("select cash_post($1,'HTG','in',$2,$3,$4,'payment',$5,$6)", [clinicId, p / 100, rn, 'Paiement ' + number, receipt.id, userId])
+    await c.query("select cash_post_m($1,'HTG','in',$2,$3,$4,'payment',$5,$6,$7)", [clinicId, p / 100, rn, 'Paiement ' + number, receipt.id, userId, String(method || 'espèces').slice(0, 30)])   // compte selon le mode de paiement
   }
   return { invoice_id: inv.id, number: inv.number, amount: a / 100, discount: d / 100, total: total / 100, paid: p / 100, balance: (total - p) / 100, receipt_id: receipt?.id ?? null, receipt_number: receipt?.receipt_number ?? null }
 }

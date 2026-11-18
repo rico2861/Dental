@@ -1,6 +1,7 @@
 import { isAssigned } from '../core/permissions.js'
 import express from 'express'; import fs from 'fs/promises'; import path from 'path'; import crypto from 'crypto'; import jwt from 'jsonwebtoken'
 import { pipe } from '../lib/pdf.js'
+import { sealFile, openFile } from '../lib/protect.js'
 const DIR = path.resolve(process.env.STORAGE_DIR || './storage'), UUID = /^[0-9a-f-]{36}$/
 const KINDS = ['radiographie', 'photo', 'pdf', 'ordonnance', 'devis', 'consentement', 'plan_signe'], CK = ['treatment_consent', 'prosthesis_quote', 'treatment_plan', 'intervention_authorization']
 const TEMPLATES = { treatment_consent: "Je soussigné(e) reconnais avoir été informé(e) par le praticien de mon état bucco-dentaire, du traitement proposé, de ses alternatives, de ses risques et de son coût. J'ai pu poser mes questions et j'accepte de recevoir le traitement.",
@@ -18,7 +19,7 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     if (!KINDS.includes(kind) || !Buffer.isBuffer(req.body) || !req.body.length) return fail(res, 400, 'Fichier ou type invalide')
     const mime = sniff(req.body); if (!mime) return fail(res, 415, 'Format non accepté (PDF, JPEG, PNG ou WebP uniquement)')
     let name = 'document'; try { name = clean(decodeURIComponent(String(req.headers['x-file-name'] || 'document')).replace(/[\\/\x00-\x1f]/g, '_'), 120) || 'document' } catch {}
-    const key = `${req.user.clinic_id}/${crypto.randomUUID()}`; await fs.mkdir(path.join(DIR, req.user.clinic_id), { recursive: true }); await fs.writeFile(path.join(DIR, key), req.body, { mode: 0o600 })
+    const key = `${req.user.clinic_id}/${crypto.randomUUID()}`; await fs.mkdir(path.join(DIR, req.user.clinic_id), { recursive: true }); await fs.writeFile(path.join(DIR, key), sealFile(req.body), { mode: 0o600 })   // chiffré sur le disque
     const { rows: [d] } = await q('insert into documents(clinic_id,patient_id,kind,original_name,mime,size,sha256,storage_key,uploaded_by,consultation_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,(select id from consultations where id::text=$10 and patient_id=$2)) returning id', [req.user.clinic_id, p.id, kind, name, mime, req.body.length, sha(req.body), key, req.user.id, String(req.headers['x-consultation-id'] || '')])
     await audit(req, 'DOCUMENT_UPLOADED', 'documents', d.id, { patient_id: p.id, kind }); res.json(d) }))
   app.get('/api/patients/:id/documents', need('view_medical_records'), wrap(async (req, res) => { const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé')
@@ -29,7 +30,7 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
   app.get('/api/files/:token', need('view_medical_records'), wrap(async (req, res) => {
     let t; try { t = jwt.verify(req.params.token, process.env.JWT_SECRET) } catch { return fail(res, 410, 'Lien expiré') }
     if (t.u !== req.user.id) return fail(res, 403, 'Lien non valable pour cet utilisateur'); req.params.id = t.d; const d = await docOf(req); if (!d) return fail(res, 404, 'Introuvable')
-    const buf = await fs.readFile(path.join(DIR, d.storage_key)); if (sha(buf) !== d.sha256) return fail(res, 500, 'Intégrité du fichier compromise')
+    const buf = openFile(await fs.readFile(path.join(DIR, d.storage_key))); if (sha(buf) !== d.sha256) return fail(res, 500, 'Intégrité du fichier compromise')
     await audit(req, 'DOCUMENT_VIEWED', 'documents', d.id); res.set({ 'Content-Type': d.mime, 'Content-Disposition': `inline; filename="${encodeURIComponent(d.original_name)}"`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }).send(buf) }))
   app.post('/api/documents/:id/archive', need('edit_medical_records'), wrap(async (req, res) => { const d = await docOf(req); if (!d) return fail(res, 404, 'Introuvable')
     await q('update documents set archived_at=now() where id=$1', [d.id]); await audit(req, 'DOCUMENT_ARCHIVED', 'documents', d.id); res.json({ ok: true }) }))   // jamais de suppression physique

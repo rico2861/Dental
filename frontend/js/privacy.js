@@ -3,9 +3,10 @@
 // des chiffres factices floutés (« 88 888 HTG ») ; l'inspection du code de la page ne révèle rien. Les vraies valeurs
 // sont gardées uniquement en mémoire JavaScript pour pouvoir les réafficher à la désactivation.
 const KEY = 'dl_discretion'
-let state = { on: false, contacts: false }
-try { state = { ...state, ...JSON.parse(localStorage.getItem(KEY) || '{}') } } catch {}
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)) } catch {} }
+// actif automatiquement à chaque ouverture de l'application : il faut un geste volontaire pour afficher les montants
+let state = { on: true, contacts: false }
+try { const saved = JSON.parse(localStorage.getItem(KEY) || '{}'); state.contacts = !!saved.contacts } catch {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ contacts: state.contacts })) } catch {} }
 const orig = new WeakMap()        // <span class="pvm"> → texte réel
 const origAttr = new WeakMap()    // élément → { attribut: valeur réelle }
 const N = '[\\d]{1,3}(?:[\\s\\u202f\\u00a0.]\\d{3})*(?:,\\d{1,2})?'
@@ -51,7 +52,8 @@ let busy = false
 new MutationObserver(ms => { if (!state.on || busy) return; busy = true; try { for (const m of ms) { if (m.type === 'characterData') maskText(m.target); else m.addedNodes.forEach(scan) } } finally { busy = false } })
   .observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 let banner = null
-const showBanner = on => { if (on && !banner) { banner = document.createElement('div'); banner.className = 'pvbanner'; banner.setAttribute('role', 'status'); banner.innerHTML = EYE.replace(/width="11" height="11"/, 'width="16" height="16"') + '<span><b>Mode discrétion actif</b> · montants masqués à l\'écran</span><button type="button">Afficher</button>'; banner.querySelector('button').onclick = () => { privacy.set(false); document.dispatchEvent(new CustomEvent('privacy-ui')) }; document.body.appendChild(banner) }
+const showBanner = () => {}   // bandeau retiré : le bouton de la barre du haut indique l'état
+const showBannerOld = on => { if (on && !banner) { banner = document.createElement('div'); banner.className = 'pvbanner'; banner.setAttribute('role', 'status'); banner.innerHTML = EYE.replace(/width="11" height="11"/, 'width="16" height="16"') + '<span><b>Mode discrétion actif</b> · montants masqués à l\'écran</span><button type="button">Afficher</button>'; banner.querySelector('button').onclick = () => { privacy.set(false); document.dispatchEvent(new CustomEvent('privacy-ui')) }; document.body.appendChild(banner) }
   else if (!on && banner) { banner.remove(); banner = null } }
 export const privacy = {
   get on() { return state.on }, get contacts() { return state.contacts },

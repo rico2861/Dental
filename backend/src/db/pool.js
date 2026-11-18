@@ -19,6 +19,8 @@ try {
     1082: v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d) }
   } })
   await db.waitReady
+  // fuseau horaire de la clinique : « aujourd'hui », les totaux du jour et du mois suivent l'heure d'Haïti, pas l'heure UTC
+  await db.exec("set timezone to '" + String(process.env.CLINIC_TZ || 'America/Port-au-Prince').replace(/'/g, '') + "'")
 } catch (e) {
   // base illisible (souvent après un arrêt brutal) : message clair et procédure de récupération, rien n'est modifié
   console.error('\n✖ La base de données ne s\'ouvre pas (' + (e.message || e) + ').')

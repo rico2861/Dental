@@ -1,3 +1,4 @@
+import os from 'os'
 import { config } from './config/env.js'
 import express from 'express'; import helmet from 'helmet'; import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser'; import jwt from 'jsonwebtoken'; import bcrypt from 'bcryptjs'; import crypto from 'crypto'
@@ -7,8 +8,9 @@ import { migrate, ensureOwner } from './db/migrate.js'
 import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
 import { ALL, SENSITIVE, ROLES, makePermissions, assignedSql } from './core/permissions.js'
 import billing from './routes/billing.js'; import clinical from './routes/clinical.js'; import stock from './routes/stock.js'; import cash from './routes/cash.js'
-import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import { ensureLogTriggers, startPlus, maintenance } from './lib/backup-plus.js'; import reports from './routes/reports.js'; import documents from './routes/documents.js'
+import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import { ensureLogTriggers, startPlus, maintenance } from './lib/backup-plus.js'; import reports from './routes/reports.js'; import queue from './routes/queue.js'; import documents from './routes/documents.js'
 import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
+import { sealJson, protectExisting } from './lib/protect.js'
 const SECRET = config.secret
 if (!SECRET || SECRET.length < 32) throw new Error('JWT_SECRET (32+ caractères) requis')
 const prod = config.prod
@@ -22,7 +24,8 @@ const audit = (req, action, table, id, details) =>
 // ── App ──
 const app = express()
 app.set('trust proxy', 1)
-app.use(helmet()); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
+// réseau local en HTTP : pas de redirection forcée vers HTTPS (sinon les autres postes n'affichent qu'une page blanche)
+app.use(helmet({ contentSecurityPolicy: { directives: { upgradeInsecureRequests: null } }, hsts: false, crossOriginOpenerPolicy: false, originAgentCluster: false })); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
 // mode mono-utilisateur pendant une restauration : toute autre requête est refusée proprement
 app.use((req, res, next) => maintenance.on && req.path.startsWith('/api/') && req.path !== '/api/health' ? res.status(503).json({ error: (maintenance.why || 'Restauration en cours') + ' : réessayez dans un instant', code: 'MAINTENANCE' }) : next())
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next)
@@ -47,7 +50,7 @@ const need = (...ps) => [auth, (req, res, next) => {
   if (ps.length && !ps.some(p => req.perms.has(p))) return fail(res, 403, 'Permission refusée')
   next() }]
 const newSession = async (req, res, u) => { const { rows: [s] } = await q('insert into user_sessions(user_id,ip,user_agent) values($1,$2,$3) returning id', [u.id, req.ip, (req.headers['user-agent'] || '').slice(0, 200)])
-  res.cookie('dl', jwt.sign({ id: u.id, tv: u.token_version, sid: s.id }, SECRET, { expiresIn: '8h' }), { httpOnly: true, sameSite: 'strict', secure: prod, maxAge: 8 * 3600e3 }) }
+  res.cookie('dl', jwt.sign({ id: u.id, tv: u.token_version, sid: s.id }, SECRET, { expiresIn: '8h' }), { httpOnly: true, sameSite: 'strict', secure: req.secure, maxAge: 8 * 3600e3 }) }
 // Politique de mot de passe : 12 caractères, majuscule, minuscule, chiffre, caractère spécial, pas de répétition,
 // ni nom / prénom / e-mail de la personne, ni mot de passe courant
 const COMMON = ['password', 'motdepasse', 'azerty', 'qwerty', '123456', '12345678', 'abcdef', 'admin', 'welcome', 'bienvenue', 'dental', 'clinique', 'clinic', 'haiti', 'soleil', 'dentist', 'docteur', 'secret', 'letmein', 'iloveyou']
@@ -185,7 +188,7 @@ app.get('/api/patients', need('view_all_patients', 'view_assigned_patients'), wr
   const { rows } = await q(`select id,file_number,last_name,first_name,phone,sex,status,deleted_at,delete_reason,(select u.first_name||' '||u.last_name from users u where u.id=patients.deleted_by) deleted_by_name,date_part('year',age(birth_date))::int age,registered_at,count(*) over() total from patients where ${w} order by last_name,first_name limit 20 offset ${page * 20}`, args)
   res.json({ rows, total: Number(rows[0]?.total ?? 0) }) }))
 // Aide à la saisie : retrouve le n° de dossier à partir d'un nom (et inversement) dans les formulaires.
-app.get('/api/patients/lookup', need('view_all_patients', 'view_assigned_patients', 'manage_appointments', 'manage_treatment_plans', 'manage_prostheses', 'manage_finances', 'view_finances', 'manage_inventory', 'create_patients', 'edit_patients'), wrap(async (req, res) => {
+app.get('/api/patients/lookup', need('view_all_patients', 'view_assigned_patients', 'manage_appointments', 'manage_treatment_plans', 'manage_prostheses', 'manage_finances', 'view_finances', 'manage_inventory', 'create_patients', 'edit_patients', 'manage_queue'), wrap(async (req, res) => {
   const args = [req.user.clinic_id], w = patWhere(clean(req.query.q, 60), args)
   res.json((await q(`select id,file_number,last_name,first_name,phone from patients where ${w} and status='active' order by last_name,first_name limit 10`, args)).rows) }))
 app.post('/api/patients', need('create_patients'), wrap(async (req, res) => {
@@ -207,7 +210,7 @@ app.post('/api/patients', need('create_patients'), wrap(async (req, res) => {
   if (b.has_allergy === 'no') med.allergies = 'Aucune'; else if (al) med.allergies = al
   for (const k of COND) if (b[k] === true || b[k] === 'on' || b[k] === 'true') med[k] = true
   for (const [k, n] of [['blood_group', 5], ['blood_pressure', 20], ['medications', 500], ['other', 500], ['motif', 500]]) { const v = clean(b[k], n); if (v) med[k] = v }
-  if (Object.keys(med).length) await q('insert into medical_histories(patient_id,clinic_id,data,updated_by) values($1,$2,$3,$4)', [p.id, req.user.clinic_id, med, req.user.id])
+  if (Object.keys(med).length) await q('insert into medical_histories(patient_id,clinic_id,data,updated_by) values($1,$2,$3,$4)', [p.id, req.user.clinic_id, sealJson(med), req.user.id])
   await audit(req, 'PATIENT_CREATED', 'patients', p.id); res.json(p) }))
 app.get('/api/dashboard', need(), wrap(async (req, res) => {
   const c = req.user.clinic_id, out = {}
@@ -240,15 +243,19 @@ app.get('/api/audit', need('view_audit_logs'), wrap(async (req, res) => res.json
     and ($8::text is null or a.action ilike '%'||$8||'%' or a.details::text ilike '%'||$8||'%' or concat(u.first_name,' ',u.last_name) ilike '%'||$8||'%') order by a.id desc limit $3`, [req.user.clinic_id, /^\d+$/.test(req.query.before || '') ? req.query.before : null, Math.min(200, Math.max(1, parseInt(req.query.limit) || 100)),
     /^[0-9a-f-]{36}$/.test(req.query.user || '') ? req.query.user : null, /^[A-Z_%,]+$/.test(req.query.actions || '') ? req.query.actions : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null, clean(req.query.q, 60) || null])).rows)))
 
-const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
+const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
 app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
+// adresses du réseau local : les autres ordinateurs, tablettes et téléphones connectés au même Wi-Fi / réseau ouvrent l'une d'elles
+const lanUrls = () => Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal && !/^169.254./.test(i.address)).map(i => `http://${i.address}:${config.port}`)
+app.get('/api/network', need(), (req, res) => res.json({ port: config.port, urls: lanUrls(), firewall: `New-NetFirewallRule -DisplayName "DENTAL LIGHT" -Direction Inbound -Protocol TCP -LocalPort ${config.port} -Action Allow -Profile Private,Domain` }))
 app.use('/api', (req, res) => fail(res, 404, 'Route inconnue'))
 app.use(express.static(config.frontendDir, { etag: true, setHeaders: (res, f) => { if (/.(js|css|html)$/.test(f)) res.setHeader('Cache-Control', 'no-cache') } }))   // l'interface est toujours revérifiée : jamais d'ancienne version affichée
 app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail(res, 413, 'Fichier trop volumineux (10 Mo maximum)') : fail(res, 500, 'Erreur serveur') })
 { const c = await pool.connect()   // base embarquée : migrations + propriétaire appliqués automatiquement au démarrage
   try { await migrate(c, () => {}); if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {}) } finally { c.release() } }
+try { const r = await protectExisting(q, config.storageDir); if (r.rows || r.files) console.log(`Données médicales chiffrées : ${r.rows} enregistrement(s), ${r.files} document(s)`) } catch (e) { console.error('Chiffrement des données :', e.message) }
 try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
-const server = app.listen(config.port, () => console.log('DENTAL LIGHT prêt sur le port', config.port))
+const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { console.log('DENTAL LIGHT prêt sur le port', config.port); const u = lanUrls(); if (u.length) { console.log('Sur les autres appareils du même réseau, ouvrez :'); u.forEach(x => console.log('   ' + x)); console.log("(Si la page ne s'ouvre pas : autorisez le port " + config.port + " dans le pare-feu Windows, voir Utilisateurs → Accès réseau)") } })
 if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)

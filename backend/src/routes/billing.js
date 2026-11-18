@@ -1,4 +1,4 @@
-import { payPlan, payProblem } from '../lib/billing-core.js'
+import { payPlan, payProblem, lockedDoctor } from '../lib/billing-core.js'
 import { pipe, invoicePdf, receiptPdf, payslipPdf } from '../lib/pdf.js'
 import { makePdf, header as pdfHeader, table as pdfTable, num as pdfNum, fd as pdfFd } from '../lib/dossier-pdf.js'
 const NUM = /^\d{1,10}(\.\d{1,4})?$/, c100 = v => Math.round(Number(v) * 100)
@@ -8,6 +8,8 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   const clinic = async cid => (await q('select name,address,phone from clinics where id=$1', [cid])).rows[0]
   const E = (s, m) => ({ err: [s, m] })
 
+  // factures sans médecin responsable : commission attribuée à personne (à corriger)
+  app.get('/api/invoices/no-doctor', need('view_finances'), wrap(async (req, res) => { const r = (await q("select i.id,i.number,p.last_name||' '||p.first_name patient,i.total::text,i.created_at from invoices i join patients p on p.id=i.patient_id where i.clinic_id=$1 and i.kind='invoice' and i.status<>'cancelled' and i.doctor_id is null order by i.created_at desc", [req.user.clinic_id])).rows; res.json({ count: r.length, rows: r.slice(0, 50) }) }))
   app.get('/api/invoices', need('view_finances'), wrap(async (req, res) => {
     const kind = req.query.kind === 'proforma' ? 'proforma' : 'invoice', page = Math.max(0, parseInt(req.query.page) || 0)
     res.json((await q(`select i.id,i.number,i.kind,i.status,i.currency,i.total::text,i.created_at,p.last_name||' '||p.first_name patient,
@@ -23,9 +25,12 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const pct = b.discount_pct !== undefined && b.discount_pct !== '' ? Number(String(b.discount_pct).replace(',', '.')) : null
     if (pct !== null && !(pct >= 0 && pct <= 100)) return fail(res, 400, 'Pourcentage de remise invalide (0 à 100)')
     const disc = pct !== null ? Math.round(sub * pct / 100) : b.discount ? c100(String(b.discount).replace(',', '.')) : 0; if (!(disc >= 0 && disc <= sub)) return fail(res, 400, 'Remise invalide')
-    const doc = /^[0-9a-f-]{36}$/.test(b.doctor_id || '') ? b.doctor_id : null
+    // médecin responsable : obligatoire sur une facture (sa commission en dépend) ; un médecin est toujours lui-même
+    const doc = lockedDoctor(req) ? req.user.id : /^[0-9a-f-]{36}$/.test(b.doctor_id || '') ? b.doctor_id : null
+    if (kind === 'invoice' && !doc) return fail(res, 400, 'Choisissez le médecin responsable : sa commission est calculée sur cette facture')
     const out = await tx(async c => {
       const pat = (await c.query('select id from patients where clinic_id=$1 and file_number=$2', [req.user.clinic_id, clean(b.patient_file, 30)])).rows[0]; if (!pat) return E(404, 'Patient introuvable')
+      if (doc && !(await c.query("select 1 from users where id=$1 and clinic_id=$2 and status='active'", [doc, req.user.clinic_id])).rowCount) return E(400, 'Médecin responsable introuvable ou désactivé')
       const rate = await rateNow(c, req.user.clinic_id); if (cur === 'USD' && !rate) return E(409, "Définissez d'abord un taux de change")
       const seq = (await c.query(`select nextval('${kind === 'invoice' ? 'invoice_seq' : 'proforma_seq'}') n`)).rows[0].n
       const num = `${kind === 'invoice' ? 'FAC' : 'PRO'}-${new Date().getFullYear()}-${String(seq).padStart(5, '0')}`
@@ -83,7 +88,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       const rn = `REC-${new Date().getFullYear()}-${String((await c.query("select nextval('receipt_seq') n")).rows[0].n).padStart(5, '0')}`
       const pr = (await c.query('insert into payments(clinic_id,invoice_id,receipt_number,amount,currency,rate_htg_per_usd,applied_amount,amount_htg,method,idempotency_key,created_by,reference) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id,receipt_number',
         [req.user.clinic_id, inv.id, rn, a / 100, cur, rate, applied / 100, htg / 100, clean(method, 30), key, req.user.id, clean(req.body.reference, 80)])).rows[0]
-      await c.query("select cash_post($1,$2,'in',$3,$4,$5,'payment',$6,$7)", [req.user.clinic_id, cur, a / 100, rn, 'Paiement ' + inv.number, pr.id, req.user.id]); return pr })
+      await c.query("select cash_post_m($1,$2,'in',$3,$4,$5,'payment',$6,$7,$8)", [req.user.clinic_id, cur, a / 100, rn, 'Paiement ' + inv.number, pr.id, req.user.id, clean(method, 30)]); return pr })
     if (out.err) return fail(res, ...out.err)
     if (!out.duplicate) await audit(req, 'PAYMENT_RECORDED', 'payments', out.id, { receipt: out.receipt_number }); res.json(out) }))
 
@@ -91,7 +96,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const reason = clean(req.body.reason, 200); if (!reason) return fail(res, 400, 'Motif requis')
     const r = await q('update payments set voided_at=now(), void_reason=$3 where id=$1 and clinic_id=$2 and voided_at is null returning id,receipt_number,amount,currency', [req.params.id, req.user.clinic_id, reason])
     if (!r.rowCount) return fail(res, 404, 'Paiement introuvable ou déjà annulé')
-    const v = r.rows[0]; await q("select cash_post($1,$2,'out',$3,$4,$5,'payment_void',$6,$7)", [req.user.clinic_id, v.currency, v.amount, 'VOID-' + v.receipt_number, 'Annulation ' + v.receipt_number, v.id, req.user.id]); await audit(req, 'PAYMENT_VOIDED', 'payments', req.params.id, { reason }); res.json({ ok: true }) }))
+    const v = r.rows[0]; await q('select cash_void($1,$2,$3,$4,$5)', [req.user.clinic_id, v.id, 'VOID-' + v.receipt_number, 'Annulation ' + v.receipt_number, req.user.id]); await audit(req, 'PAYMENT_VOIDED', 'payments', req.params.id, { reason }); res.json({ ok: true }) }))
   app.get('/api/payments/:id/receipt', need('view_finances'), wrap(async (req, res) => {
     const pay = (await q('select * from payments where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0]; if (!pay) return fail(res, 404, 'Introuvable')
     const inv = (await q('select * from invoices where id=$1', [pay.invoice_id])).rows[0], pat = (await q('select * from patients where id=$1', [inv.patient_id])).rows[0]
@@ -118,7 +123,8 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       const i = (await c.query('select id,status from invoices where id=$1 and clinic_id=$2 for update', [req.params.id, req.user.clinic_id])).rows[0]; if (!i) return E(404, 'Introuvable'); if (i.status !== 'issued') return E(409, 'Seule une facture émise (ni annulée, ni convertie) peut être corrigée')
       const paid = c100((await c.query('select coalesce(sum(applied_amount),0) s from payments where invoice_id=$1 and voided_at is null', [i.id])).rows[0].s)
       if (sub - disc < paid) return E(409, 'Le nouveau total serait inférieur aux paiements déjà reçus : annulez d\'abord un paiement')
-      const before = await snap(c, i.id), doc = /^[0-9a-f-]{36}$/.test(b.doctor_id || '') ? b.doctor_id : b.doctor_id === '' ? null : before.doctor_id
+      const before = await snap(c, i.id), doc = lockedDoctor(req) ? before.doctor_id || req.user.id : /^[0-9a-f-]{36}$/.test(b.doctor_id || '') ? b.doctor_id : before.doctor_id
+      if (before.kind === 'invoice' && !doc) return E(400, 'Choisissez le médecin responsable : sa commission est calculée sur cette facture')
       await c.query('delete from invoice_items where invoice_id=$1', [i.id]); for (const l of lines) await c.query('insert into invoice_items(invoice_id,description,qty,unit_price,line_total) values($1,$2,$3,$4,$5)', [i.id, ...l])
       await c.query('update invoices set subtotal=$2,discount=$3,total=$4,doctor_id=$5 where id=$1', [i.id, sub / 100, disc / 100, (sub - disc) / 100, doc])
       const after = await snap(c, i.id); await c.query('insert into invoice_revisions(clinic_id,invoice_id,changed_by,reason,before,after) values($1,$2,$3,$4,$5,$6)', [req.user.clinic_id, i.id, req.user.id, reason, JSON.stringify(before), JSON.stringify(after)])
@@ -150,7 +156,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const rows = await debtRows(req), cl = await clinic(req.user.clinic_id) || {}, tot = {}; for (const r of rows) tot[r.currency] = Math.round(((tot[r.currency] || 0) + r.balance) * 100) / 100
     const per = [req.query.from && 'du ' + req.query.from.split('-').reverse().join('/'), req.query.to && 'au ' + req.query.to.split('-').reverse().join('/')].filter(Boolean).join(' ') || 'toutes périodes'
     await audit(req, 'DEBTS_EXPORTED', 'invoices', null, { count: rows.length, format: 'pdf' })
-    makePdf(res, 'dettes-patients-' + new Date().toISOString().slice(0, 10), doc => {
+    makePdf(res, 'dettes-patients-' + new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), doc => {
       pdfHeader(doc, cl, 'Dettes patients', `${rows.length} facture(s) impayée(s) · ${per} · édité le ${pdfFd(new Date())}`)
       pdfTable(doc, [{ h: 'Patient', w: 17 }, { h: 'Téléphone', w: 11 }, { h: 'Facture', w: 12 }, { h: 'Date', w: 8 }, { h: 'Âge', w: 5, a: 'right' }, { h: 'Médecin', w: 13 }, { h: 'Total', w: 11, a: 'right' }, { h: 'Remise', w: 9, a: 'right' }, { h: 'Payé', w: 11, a: 'right' }, { h: 'Solde', w: 11, a: 'right' }],
         rows.map(r => [r.patient + ' (' + r.file_number + ')', r.phone || '', r.number, pdfFd(r.created_at), r.age_days + ' j', r.doctor || '', pdfNum(r.total, r.currency), r.discount ? pdfNum(r.discount, r.currency) : '', pdfNum(r.paid, r.currency), pdfNum(r.balance, r.currency)]),
@@ -176,7 +182,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     await audit(req, 'EMPLOYEE_CREATED', 'employees', e.id); res.json(e) }))
   app.get('/api/payroll', need('view_salaries'), wrap(async (req, res) => res.json((await q(
     "select r.id,r.period,e.id employee_id,e.first_name||' '||e.last_name employee,r.base::text,r.commissions::text,r.bonuses::text,r.deductions::text,r.other_deductions::text,r.deduction_details,r.advances::text,r.net::text,r.paid::text,r.status from payroll_records r join employees e on e.id=r.employee_id where r.clinic_id=$1 and r.period=$2 order by e.last_name",
-    [req.user.clinic_id, /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7)])).rows)))
+    [req.user.clinic_id, /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7)])).rows)))
   // recalcule une fiche : retenues de l'employé (pourcentage du brut ou montant fixe) + autres déductions, net = brut − retenues − avances
   const recompute = async (c, id) => { const r = (await c.query('select * from payroll_records where id=$1 for update', [id])).rows[0]; if (!r) return null
     const gross = c100(r.base) + c100(r.commissions) + c100(r.bonuses), ded = (await c.query('select id,label,kind,value from employee_deductions where employee_id=$1 and active order by created_at', [r.employee_id])).rows

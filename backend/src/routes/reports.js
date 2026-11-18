@@ -67,7 +67,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   app.get('/api/reports/:type', need(), wrap(async (req, res) => {
     const r0 = CAT[req.params.type]; if (!r0 || !visible(req, r0)) return fail(res, 403, 'Rapport non autorisé')
     const own = selfOnly(req) && r0.mine, r = { ...r0, sql: own ? r0.mine : r0.sql, title: own ? r0.mineTitle : r0.title }, uid = (own || r0.doctorOnly) ? [req.user.id] : []
-    const to = D(req.query.to) || new Date().toISOString().slice(0, 10), from = D(req.query.from) || to.slice(0, 8) + '01', fmt = req.query.format || 'json'
+    const to = D(req.query.to) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), from = D(req.query.from) || to.slice(0, 8) + '01', fmt = req.query.format || 'json'
     if (fmt !== 'json' && !req.perms.has('export_reports')) return fail(res, 403, "Permission d'export requise")
     let rows = (await q(r.sql, r.noRange ? [req.user.clinic_id] : [req.user.clinic_id, from, to, ...uid])).rows.slice(0, 20000)
     if (req.params.type === 'stock') rows = rows.map(x => ({ ...x, to_order: Number(x.stock) <= Number(x.min_stock) ? 'Oui' : '' }))
@@ -83,7 +83,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   // ── Dashboard propriétaire ──
   // ── Statistiques financières détaillées (page Vue financière) ──
   app.get('/api/finance/stats', need('view_finances'), wrap(async (req, res) => {
-    const c = req.user.clinic_id, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toISOString().slice(0, 10), span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
+    const c = req.user.clinic_id, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
     const { rows: [rg] } = await q(`select date_trunc('${per}',$1::date)::date::text f,(date_trunc('${per}',$1::date)+interval '${span}' - interval '1 day')::date::text t,(date_trunc('${per}',$1::date)-interval '${span}')::date::text pf,(date_trunc('${per}',$1::date)-interval '1 day')::date::text pt`, [ref])
     const P = [c, rg.f, rg.t], PP = [c, rg.pf, rg.pt], rows = async (sql, p = P) => (await q(sql, p)).rows, one = async (sql, p = P) => (await q(sql, p)).rows[0]
     const HTG = "i.total*case when i.currency='USD' then coalesce(i.rate_htg_per_usd,0) else 1 end"
@@ -111,7 +111,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       rows(`select extract(isodow from created_at at time zone ${TZ})::int wd, sum(amount_htg)::float8 v from payments where clinic_id=$1 and voided_at is null and ${BT('created_at')} group by 1 order by 1`)])
     res.json({ period: { from: rg.f, to: rg.t, prev_from: rg.pf, prev_to: rg.pt, kind: per }, cur, prev, daily, methods, doctors, services, status, aging, debtors, currency, expenses_by_category: expCat, months12, weekday }) }))
   app.get('/api/dashboard/owner', need(), wrap(async (req, res) => {
-    const c = req.user.clinic_id, P = req.perms, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toISOString().slice(0, 10)
+    const c = req.user.clinic_id, P = req.perms, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })
     const span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
     const { rows: [rg] } = await q(`select date_trunc('${per}',$1::date)::date::text f,(date_trunc('${per}',$1::date)+interval '${span}')::date::text n, to_char($1::date,'YYYY') y`, [ref])
     const f = rg.f, t = (await q("select ($1::date - 1)::text t", [rg.n])).rows[0].t, one = async (s, p) => (await q(s, p)).rows[0], out = { period: { from: f, to: t, kind: per }, alerts: [] }

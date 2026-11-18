@@ -2,6 +2,7 @@ import { isAssigned } from '../core/permissions.js'
 // Dossier patient : résumé complet, modification, désactivation / réactivation (jamais de suppression), PDF adaptés.
 import { makePdf, patientPdf, consultationPdf } from '../lib/dossier-pdf.js'
 import { advice } from '../lib/clinical-advice.js'
+import { openJson, openExam } from '../lib/protect.js'
 const UUID = /^[0-9a-f-]{36}$/, FIELDS = ['last_name', 'first_name', 'phone', 'phone2', 'address', 'department', 'zone', 'profession', 'emergency_contact', 'emergency_phone', 'marital_status', 'email', 'id_number', 'birth_place', 'insurance', 'insurance_number', 'referred_by', 'notes']
 export default function (app, { q, need, audit, fail, wrap, clean }) {
   const isAdmin = u => u.role === 'OWNER' || String(u.role).startsWith('ADMIN')
@@ -44,13 +45,13 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
       q("select a.starts_at,a.reason,a.status,u.first_name||' '||u.last_name doctor from appointments a join users u on u.id=a.doctor_id where a.patient_id=$1 order by a.starts_at desc limit 60", [p.id]),
       req.perms.has('view_finances') ? financeOf(p) : null, name(p.primary_doctor_id)])
     await audit(req, 'PATIENT_PDF', 'patients', p.id)
-    const hd = h.rows[0]?.data ?? {}, upcoming = ap.rows.filter(a => new Date(a.starts_at) > new Date() && ['planned', 'confirmed'].includes(a.status)).length
-    const adv = advice({ h: hd, teeth: th.rows, consults: co.rows, upcoming, exam: ex.rows[0] })
-    makePdf(res, `dossier-${p.file_number}`, doc => patientPdf(doc, { clinic: cl, p, doctor, h: hd, exam: ex.rows[0], teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), consults: co.rows, appts: ap.rows, finance: fin, advice: adv }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
+    const hd = openJson(h.rows[0]?.data) ?? {}, upcoming = ap.rows.filter(a => new Date(a.starts_at) > new Date() && ['planned', 'confirmed'].includes(a.status)).length
+    const adv = advice({ h: hd, teeth: th.rows, consults: co.rows, upcoming, exam: openExam(ex.rows[0]) })
+    makePdf(res, `dossier-${p.file_number}`, doc => patientPdf(doc, { clinic: cl, p, doctor, h: hd, exam: openExam(ex.rows[0]), teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), consults: co.rows, appts: ap.rows, finance: fin, advice: adv }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
   app.get('/api/consultations/:id/pdf', need('view_medical_records'), wrap(async (req, res) => {
     if (!UUID.test(req.params.id)) return fail(res, 404, 'Introuvable')
     const c = (await q("select c.*,u.first_name||' '||u.last_name doctor,pu.first_name||' '||pu.last_name primary_doctor from consultations c join users u on u.id=c.doctor_id left join users pu on pu.id=c.primary_doctor_id where c.id=$1 and c.clinic_id=$2", [req.params.id, req.user.clinic_id])).rows[0]
     const p = c && await access(req, c.patient_id); if (!p) return fail(res, 404, 'Introuvable ou accès refusé')
     const [cl, h] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id])]); await audit(req, 'CONSULTATION_PDF', 'consultations', c.id)
-    makePdf(res, `consultation-${p.file_number}-${new Date(c.consulted_at).toISOString().slice(0, 10)}`, doc => consultationPdf(doc, { clinic: cl, p, c, allergies: h.rows[0]?.data?.allergies }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
+    makePdf(res, `consultation-${p.file_number}-${new Date(c.consulted_at).toISOString().slice(0, 10)}`, doc => consultationPdf(doc, { clinic: cl, p, c, allergies: openJson(h.rows[0]?.data)?.allergies }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
 }

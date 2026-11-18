@@ -1,12 +1,12 @@
 // Matrice des rôles et permissions de DENTAL LIGHT.
-export const ALL = ['view_all_patients','view_assigned_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','view_finances','manage_finances','view_salaries','manage_payroll','manage_inventory','approve_purchases','manage_exchange_rates','manage_users','manage_roles','view_audit_logs','export_reports','manage_appointments','manage_treatment_plans','manage_prostheses','manage_settings']
+export const ALL = ['view_all_patients','view_assigned_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','view_finances','manage_finances','view_salaries','manage_payroll','manage_inventory','approve_purchases','manage_exchange_rates','manage_users','manage_roles','view_audit_logs','export_reports','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses','manage_settings']
 export const SENSITIVE = new Set(['view_medical_records','edit_medical_records','view_finances','manage_finances','view_salaries','manage_payroll','approve_purchases','manage_exchange_rates','manage_users','manage_roles','view_audit_logs','manage_settings'])
 const ADMINISH = ALL.filter(p => p !== 'manage_exchange_rates')
 export const ROLES = {
-  OWNER: ALL, ADMIN: ADMINISH, ADMIN_MEDICAL: ['view_all_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','manage_appointments','manage_treatment_plans','manage_prostheses'],
+  OWNER: ALL, ADMIN: ADMINISH, ADMIN_MEDICAL: ['view_all_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses'],
   ADMIN_FINANCIER: ['view_finances','manage_finances','view_salaries','export_reports'],
-  DENTIST: ['view_all_patients','view_assigned_patients','view_medical_records','edit_medical_records','manage_appointments','manage_treatment_plans','manage_prostheses'], DENTAL_ASSISTANT: ['view_assigned_patients'],
-  SECRETARY: ['view_all_patients','create_patients','edit_patients','manage_appointments'], ACCOUNTANT: ['view_finances','manage_finances','view_salaries','export_reports'],
+  DENTIST: ['view_all_patients','view_assigned_patients','view_medical_records','edit_medical_records','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses'], DENTAL_ASSISTANT: ['view_assigned_patients','manage_queue'],
+  SECRETARY: ['view_all_patients','create_patients','edit_patients','manage_appointments','manage_queue'], ACCOUNTANT: ['view_finances','manage_finances','view_salaries','export_reports'],
   STOCK_MANAGER: ['manage_inventory'], DENTAL_TECH: ['manage_prostheses'], STAFF: [] }
 
 // Patient « assigné » à un médecin : il en est le médecin traitant, ou il l'a en rendez-vous, en consultation ou comme responsable d'un plan de traitement.

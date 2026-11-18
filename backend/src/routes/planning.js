@@ -17,9 +17,9 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     `select 1 from appointments where clinic_id=$1 and status in ('planned','confirmed') and id<>coalesce($6::uuid,'00000000-0000-0000-0000-000000000000'::uuid) and starts_at < ($4::timestamptz + $5*interval '1 minute')
      and starts_at + duration_min*interval '1 minute' > $4::timestamptz and (doctor_id=$2 or ($3::text is not null and chair=$3::text)) limit 1`, [cid, doc, chair, start, dur, skip ?? null])
   app.get('/api/appointments', need(...A), wrap(async (req, res) => {
-    const d = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? s : null, from = d(req.query.from) || new Date().toISOString().slice(0, 10), to = d(req.query.to) || from
+    const d = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? s : null, from = d(req.query.from) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), to = d(req.query.to) || from
     res.json((await q(`select a.id,a.starts_at,a.duration_min,a.reason,a.chair,a.status,a.doctor_id,a.arrived_at,a.seated_at,a.finished_at,p.id patient_id,p.file_number,p.last_name||' '||p.first_name patient,u.first_name||' '||u.last_name doctor
-      from appointments a join patients p on p.id=a.patient_id join users u on u.id=a.doctor_id where a.clinic_id=$1 and a.starts_at >= $2::date and a.starts_at < ($3::date+1) order by a.starts_at`, [req.user.clinic_id, from, to])).rows) }))
+      from appointments a join patients p on p.id=a.patient_id join users u on u.id=a.doctor_id where a.clinic_id=$1 and a.starts_at >= ($2::date::timestamp at time zone 'America/Port-au-Prince') and a.starts_at < (($3::date+1)::timestamp at time zone 'America/Port-au-Prince') order by a.starts_at`, [req.user.clinic_id, from, to])).rows) }))
   app.post('/api/appointments', need(...A), wrap(async (req, res) => {
     const b = req.body; if (lockedDoctor(req)) b.doctor_id = req.user.id; const dur = parseInt(b.duration_min) || 30, t = Date.parse(b.starts_at); if (isNaN(t) || dur < 5 || dur > 480) return fail(res, 400, 'Date ou durée invalide')
     // heures de service du médecin : vérifiées AVANT la transaction (la base embarquée n'a qu'une connexion)
@@ -50,6 +50,13 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       if (step === 'seated') { if (a.seated_at) return E(409, 'Déjà au fauteuil'); await c.query('update appointments set arrived_at=coalesce(arrived_at,now()), seated_at=now() where id=$1', [a.id]) }
       if (step === 'finished') { if (a.finished_at) return E(409, 'Déjà terminé'); await c.query("update appointments set arrived_at=coalesce(arrived_at,now()), seated_at=coalesce(seated_at,now()), finished_at=now(), status='done' where id=$1", [a.id]) }
       if (step === 'undo') { if (a.finished_at) await c.query("update appointments set finished_at=null, status='confirmed' where id=$1", [a.id]); else if (a.seated_at) await c.query('update appointments set seated_at=null where id=$1', [a.id]); else await c.query('update appointments set arrived_at=null where id=$1', [a.id]) }
+      // même file d'attente que la salle d'attente : arrivée = numéro du jour ; consultation / fin suivent le ticket
+      const tk = (await c.query("select id from queue_tickets where appointment_id=$1 and status<>'cancelled'", [a.id])).rows[0]
+      if (step === 'arrived' && !tk) { const day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), n = (await c.query('select coalesce(max(number),0)+1 n from queue_tickets where clinic_id=$1 and day=$2', [a.clinic_id, day])).rows[0].n
+        await c.query('insert into queue_tickets(clinic_id,day,number,patient_id,appointment_id,doctor_id,reason,created_by) values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing', [a.clinic_id, day, n, a.patient_id, a.id, a.doctor_id, a.reason, req.user.id]) }
+      if (tk && step === 'seated') await c.query("update queue_tickets set status='in_consult', called_at=coalesce(called_at,now()), started_at=coalesce(started_at,now()) where id=$1 and status in ('waiting','called')", [tk.id])
+      if (tk && step === 'finished') await c.query("update queue_tickets set status='done', started_at=coalesce(started_at,now()), finished_at=now() where id=$1 and status not in ('done','cancelled')", [tk.id])
+      if (tk && step === 'undo') await c.query("update queue_tickets set status=case when status='done' then 'in_consult' when status='in_consult' then 'waiting' else 'cancelled' end, finished_at=case when status='done' then null else finished_at end, started_at=case when status='in_consult' then null else started_at end where id=$1", [tk.id])
       return (await c.query('select arrived_at,seated_at,finished_at,status from appointments where id=$1', [a.id])).rows[0] })
     if (!out.err) await audit(req, 'APPOINTMENT_FLOW', 'appointments', req.params.id, { step }); done(res, out) }))
   // salle d'attente du jour : qui attend, depuis combien de temps, qui est au fauteuil
@@ -155,7 +162,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const comm = months.reduce((s, m) => s + m.remaining, 0), sal = payroll.reduce((s, p) => s + Math.max(0, p.net - p.paid), 0)
     return { employee: emp, months, payroll, commissions_due: Math.round(comm * 100) / 100, payroll_due: Math.round(sal * 100) / 100, total_due: Math.round((comm + sal) * 100) / 100 } }
   app.get('/api/me/activity', need(), wrap(async (req, res) => {
-    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : new Date().toISOString().slice(0, 7), d0 = m + '-01', me = req.user.id, cid = req.user.clinic_id
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7), d0 = m + '-01', me = req.user.id, cid = req.user.clinic_id
     const kpi = (await q(COMMISSION_SQL + 'and u.id=$3', [cid, d0, me])).rows.map(withCommission)[0] || null
     if (kpi) { kpi.paid_direct = Number((await q('select coalesce(sum(amount),0) s from commission_payments where clinic_id=$1 and doctor_id=$2 and period=$3', [cid, me, m])).rows[0].s)
       kpi.in_payroll = Number((await q('select coalesce(sum(r.commissions),0) s from payroll_records r join employees e on e.id=r.employee_id where e.user_id=$1 and r.period=$2', [me, m])).rows[0].s)
@@ -182,7 +189,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     if (P.has('manage_appointments') || role === 'DENTIST') out.today = (await q(`select a.id,a.starts_at,a.duration_min,a.reason,a.status,a.chair,p.id patient_id,p.last_name||' '||p.first_name patient,p.phone,u.first_name||' '||u.last_name doctor
       from appointments a join patients p on p.id=a.patient_id left join users u on u.id=a.doctor_id where a.clinic_id=$1 and ${today} ${role === 'DENTIST' ? 'and a.doctor_id=$2' : 'and $2::uuid is not null'} order by a.starts_at`, [cid, me])).rows
     if (role === 'DENTIST') {
-      const m0 = new Date().toISOString().slice(0, 7) + '-01', k = (await q(COMMISSION_SQL + 'and u.id=$3', [cid, m0, me])).rows.map(withCommission)[0]
+      const m0 = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7) + '-01', k = (await q(COMMISSION_SQL + 'and u.id=$3', [cid, m0, me])).rows.map(withCommission)[0]
       out.month = k; out.owed = await owedTo(cid, me)
       out.items = (await q("select i.id,i.description,i.status,i.teeth,i.sessions_planned,i.sessions_done,t.id plan_id,p.id patient_id,p.last_name||' '||p.first_name patient from treatment_plan_items i join treatment_plans t on t.id=i.plan_id join patients p on p.id=t.patient_id where t.clinic_id=$2 and (i.doctor_id=$1 or (i.doctor_id is null and t.responsible_doctor_id=$1)) and i.status in ('todo','in_progress','postponed') and t.status in ('approved','in_progress') order by i.status desc limit 8", [me, cid])).rows
       out.recent = (await q("select c.id,c.consulted_at,c.reason,c.teeth,p.id patient_id,p.last_name||' '||p.first_name patient from consultations c join patients p on p.id=c.patient_id where c.doctor_id=$1 and c.clinic_id=$2 order by c.consulted_at desc limit 6", [me, cid])).rows
@@ -241,7 +248,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   const boss = req => req.perms.has('view_finances') || req.user.role === 'OWNER' || String(req.user.role).startsWith('ADMIN')
   app.get('/api/commissions', need(), wrap(async (req, res) => {
     if (!boss(req)) return fail(res, 403, 'Permission refusée')
-    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toISOString().slice(0, 7) + '-01'
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7) + '-01'
     const per = m.slice(0, 7), rows = (await q(COMMISSION_SQL + 'order by u.last_name', [req.user.clinic_id, m])).rows.map(withCommission)
     for (const r of rows) { const d = (await q('select coalesce(sum(amount),0)::float8 s from commission_payments where clinic_id=$1 and doctor_id=$2 and period=$3', [req.user.clinic_id, r.id, per])).rows[0].s
       const pr = (await q("select coalesce(sum(r.commissions),0)::float8 s from payroll_records r join employees e on e.id=r.employee_id where e.user_id=$1 and r.period=$2 and r.clinic_id=$3", [r.id, per, req.user.clinic_id])).rows[0].s
@@ -285,7 +292,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   // ── Statistiques médecins (revenus générés ≠ salaire ≠ qualité des soins) ──
   app.get('/api/doctors/stats', need('view_medical_records', 'view_finances'), wrap(async (req, res) => {
     if (!(req.perms.has('view_finances') || req.user.role === 'OWNER' || String(req.user.role).startsWith('ADMIN'))) return fail(res, 403, 'Permission refusée')   // statistiques des médecins : direction et finances uniquement
-    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toISOString().slice(0, 7) + '-01', all = req.perms.has('view_finances')
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7) + '-01', all = req.perms.has('view_finances')
     res.json((await q(`select u.id,u.first_name||' '||u.last_name doctor,
       (select count(*) from consultations c where c.doctor_id=u.id and c.consulted_at>=$2::date and c.consulted_at<($2::date+interval '1 month'))::int consultations,
       (select count(*) from treatment_plan_items i where i.doctor_id=u.id and i.status='done' and i.done_at>=$2::date and i.done_at<($2::date+interval '1 month'))::int interventions,

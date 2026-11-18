@@ -1,7 +1,7 @@
 import { ic } from './icons.js'
 import { money, fdate, monthLabel, head, btn, kpi, kpis, pbar, empty, card, search, person, payBlock, wirePay, payFields, billMsg, tips, loadTariffs, tHTG, tLabel, badge, bs, docField, teethPicker, wireTeeth, teethOk, teethList, payLabel, payTypeFields, wirePayType, payTypeValues, slotBlock, wireSlots } from './kit.js'
 export default function install({ $, esc, api, can, toast, render, me }) {
-  const F = e => Object.fromEntries(new FormData(e.target)), today = new Date().toISOString().slice(0, 10)
+  const F = e => Object.fromEntries(new FormData(e.target)), today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })
   let day = today, planId = null, month = today.slice(0, 7), pf = 'active', docSel = null, perfRows = []
   const fday = d => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—'
   const PSC = { draft: 'st-done', pending: 'st-warn', approved: 'st-info', in_progress: 'st-info', suspended: 'st-warn', done: 'st-ok', cancelled: 'st-off' }
@@ -31,7 +31,7 @@ export default function install({ $, esc, api, can, toast, render, me }) {
       const tm = d => new Date(d).toLocaleTimeString('fr-FR', { timeZone: TZ, hour: '2-digit', minute: '2-digit' })
       const KL = { controle: 'Contrôle périodique', controle_extraction: 'Contrôle après extraction', controle_prothese: 'Contrôle après prothèse', rdv_manque: 'Rendez-vous manqué' }
       const acard = a => `<div class="apc ${a.status}" data-pi="1"><div class="apt"><b>${tm(a.starts_at)}</b><small>${a.duration_min} min</small></div>
-        <div class="apb"><span><a href="#dossiers/${a.patient_id}"><b>${esc(a.patient)}</b></a> <span class="fn sm">${esc(a.file_number)}</span></span><small>${esc(a.reason) || 'Consultation'} · ${esc(a.doctor)}${a.chair ? ' · fauteuil ' + esc(a.chair) : ''}</small>
+        <div class="apb"><span><a href="#dossiers/${a.patient_id}"><b>${esc(a.patient)}</b></a> <span class="fn sm">${esc(a.file_number)}</span></span><small>${esc(a.reason) || 'Consultation'} · ${esc(a.doctor)}</small>
         <div class="apa"><span class="badge ${ASC[a.status]}">${AS[a.status]}</span>${live(a) ? `${a.status === 'planned' ? `<button class="bs" data-a="as" data-id="${a.id}" data-s="confirmed">${ic('check', 13)}Confirmer</button>` : ''}<button class="bs" data-a="as" data-id="${a.id}" data-s="done">Terminé</button><button class="bs" data-a="as" data-id="${a.id}" data-s="no_show">Absent</button><button class="bs" data-a="rs" data-id="${a.id}" data-t="${a.starts_at}">${ic('clock', 13)}Reporter</button><button class="bs dng" data-a="as" data-id="${a.id}" data-s="cancelled" aria-label="Annuler">${ic('x', 13)}</button>` : ''}</div></div></div>`
       const strip = wdays.map(k => { const d = new Date(k + 'T12:00:00'), c = (byDay[k] || []).filter(live).length
         return `<button type="button" class="wd${k === day ? ' on' : ''}${k === todayK ? ' td' : ''}" data-a="aday" data-id="${k}"><small>${d.toLocaleDateString('fr-FR', { weekday: 'short' })}</small><b>${d.getDate()}</b><em>${c ? c + ' RDV' : '—'}</em></button>` }).join('')
@@ -134,9 +134,9 @@ export default function install({ $, esc, api, can, toast, render, me }) {
         <label>Durée<select name="duration_min"><option value="15">15 min</option><option value="30" selected>30 min</option><option value="45">45 min</option><option value="60">1 h</option><option value="90">1 h 30</option></select></label>
         ${docField(docs, me?.(), { label: 'Médecin' })}</div>
         <div class="qchips">${RSN.map(m => `<button type="button" class="qc" data-rsn="${m}">${m}</button>`).join('')}</div>
-        <div class="fg"><label>Motif<input name="reason" placeholder="Ex : Contrôle"></label><label>Fauteuil<input name="chair" placeholder="Facultatif"></label></div>${slotBlock()}`,
+        <div class="fg"><label>Motif<input name="reason" placeholder="Ex : Contrôle"></label></div>${slotBlock()}`,
       onOpen: md => { wireSlots(md, api); md.addEventListener('click', e => { const b = e.target.closest('[data-rsn]'); if (!b) return; const r = md.querySelector('[name=reason]'), on = b.classList.contains('on'); r.value = on ? '' : b.dataset.rsn; md.querySelectorAll('[data-rsn]').forEach(x => x.classList.toggle('on', !on && x === b)) }) },
-      buttons: [{ label: 'Annuler', cls: 'sec', value: null }, { label: `${ic('calendar', 16)} Planifier`, cls: 'pri', collect: true, submit: f => api('/appointments', { patient_file: f.patient_file, doctor_id: f.doctor_id, duration_min: f.duration_min, reason: f.reason, chair: f.chair, starts_at: new Date(`${f.d}T${f.t}`).toISOString() }) }] })
+      buttons: [{ label: 'Annuler', cls: 'sec', value: null }, { label: `${ic('calendar', 16)} Planifier`, cls: 'pri', collect: true, submit: f => api('/appointments', { patient_file: f.patient_file, doctor_id: f.doctor_id, duration_min: f.duration_min, reason: f.reason, starts_at: new Date(`${f.d}T${f.t}`).toISOString() }) }] })
     if (v) { day = v.d; toast('Rendez-vous planifié'); render() } }
   async function newReminder() {
     const v = await ui.dialog({ title: 'Programmer un rappel', sub: 'Le patient apparaîtra dans « Patients à revoir » à la date choisie.', icon: 'bell',
@@ -181,7 +181,7 @@ export default function install({ $, esc, api, can, toast, render, me }) {
     if (v) { toast('Laboratoire ajouté'); render() } }
 
   // ── Fenêtres des plans de traitement ──
-  const planTips = pl => { const now = new Date().toISOString().slice(0, 10), waitP = pl.filter(p => ['draft', 'pending'].includes(p.status)), idle = pl.filter(p => p.status === 'approved' && !p.done_n), late = pl.filter(p => ['approved', 'in_progress'].includes(p.status) && p.end_date && String(p.end_date).slice(0, 10) < now), owe = pl.filter(p => p.status !== 'cancelled' && p.balance > 0)
+  const planTips = pl => { const now = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), waitP = pl.filter(p => ['draft', 'pending'].includes(p.status)), idle = pl.filter(p => p.status === 'approved' && !p.done_n), late = pl.filter(p => ['approved', 'in_progress'].includes(p.status) && p.end_date && String(p.end_date).slice(0, 10) < now), owe = pl.filter(p => p.status !== 'cancelled' && p.balance > 0)
     return tips([waitP.length && { icon: 'clipboard', tone: 'warn', text: `<b>${waitP.length}</b> plan(s) attendent une validation : présentez-les au patient puis approuvez-les.` }, idle.length && { icon: 'clock', text: `<b>${idle.length}</b> plan(s) approuvé(s) sans aucune intervention réalisée : planifiez un rendez-vous.`, href: '#calendrier' },
       late.length && { icon: 'alert', tone: 'danger', text: `<b>${late.length}</b> plan(s) ont dépassé leur date de fin prévue : ${late.slice(0, 3).map(p => esc(p.patient)).join(', ')}${late.length > 3 ? '…' : ''}.` }, owe.length && { icon: 'wallet', text: `<b>${owe.length}</b> plan(s) avec un solde à encaisser (${money(owe.reduce((s, p) => s + p.balance, 0))}).`, href: '#facturation' }]) }
   const PTPL = ['Détartrage', 'Obturation composite', 'Traitement de canal', 'Extraction', 'Couronne céramique', 'Inlay / onlay', 'Implant', 'Bridge', 'Blanchiment', 'Contrôle']

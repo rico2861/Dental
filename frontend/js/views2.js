@@ -3,7 +3,7 @@ import { spinnerBlock, blocking } from './loaders.js'
 const ROLE_FR = { ADMIN: 'Administrateur', ADMIN_MEDICAL: 'Administrateur médical', ADMIN_FINANCIER: 'Administrateur financier', DENTIST: 'Médecin dentiste', DENTAL_ASSISTANT: 'Assistant(e) dentaire', SECRETARY: 'Secrétaire', ACCOUNTANT: 'Comptable', STOCK_MANAGER: 'Gestionnaire de stock', DENTAL_TECH: 'Prothésiste', STAFF: 'Personnel' }
 import { num, money, fdate, monthLabel, head, btn, bs, bsLink, kpi, kpis, badge, pbar, empty, card, search, person, fld, sel, modal, noRes, tips, loadTariffs, resetTariffs, tLabel, tHTG, payLabel, payTypeFields, wirePayType, payTypeValues } from './kit.js'
 export default function install({ $, esc, api, can, toast, render }) {
-  let kind = 'invoice', bpage = 0, period = new Date().toISOString().slice(0, 7)
+  let kind = 'invoice', bpage = 0, period = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7)
   const F = e => Object.fromEntries(new FormData(e.target))
   const METHODS = ['espèces', 'MonCash', 'NatCash', 'virement', 'carte', 'chèque', 'Autre']
   let df = { from: '', to: '', doctor: '', min: '', q: '' }
@@ -13,8 +13,8 @@ export default function install({ $, esc, api, can, toast, render }) {
 
   const views = {
     async billing() {
-      const fin = can('manage_finances'), month = new Date().toISOString().slice(0, 7)
-      const [rows, sm] = await Promise.all([api(`/invoices?kind=${kind}&page=${bpage}`), api('/finance/summary?month=' + month).catch(() => null)])
+      const fin = can('manage_finances'), month = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7)
+      const [rows, sm, nod] = await Promise.all([api(`/invoices?kind=${kind}&page=${bpage}`), api('/finance/summary?month=' + month).catch(() => null), api('/invoices/no-doctor').catch(() => ({ count: 0, rows: [] }))])
       const unpaid = rows.filter(i => i.kind === 'invoice' && i.status === 'issued' && num(i.paid) < num(i.total))
       const actions = fin ? btn('bl-new', kind === 'proforma' ? 'Nouvelle proforma' : 'Nouvelle facture', 'plus') : ''
       const line = i => {
@@ -31,7 +31,7 @@ export default function install({ $, esc, api, can, toast, render }) {
       $('#view').innerHTML = head('Facturation', 'Factures, proformas et encaissements des patients', actions)
         + (sm ? kpis([kpi('blue', 'Facturé ce mois', money(sm.invoiced_htg, 'HTG'), monthLabel(month), 'file'), kpi('green', 'Encaissé ce mois', money(sm.collected_htg, 'HTG'), 'paiements reçus', 'dollar'),
           kpi(unpaid.length ? 'orange' : 'teal', 'Factures à encaisser', unpaid.length, kind === 'invoice' ? 'parmi les factures affichées' : 'voir l\'onglet Factures', 'clock')]) : '')
-        + tips([unpaid.length && { icon: 'wallet', tone: 'warn', text: `<b>${unpaid.length}</b> facture(s) affichée(s) restent à encaisser : <b>${money(unpaid.reduce((s, i) => s + num(i.total) - num(i.paid), 0))}</b>. Relancez les patients à leur prochaine visite.` },
+        + tips([nod.count && { icon: 'alert', tone: 'danger', text: `<b>${nod.count}</b> facture(s) sans médecin responsable : leur commission n'est attribuée à personne. Ouvrez-les et choisissez le médecin (« Corriger ») : ${nod.rows.slice(0, 6).map(x => `<b>${esc(x.number)}</b> (${esc(x.patient)})`).join(', ')}${nod.count > 6 ? '…' : ''}` }, unpaid.length && { icon: 'wallet', tone: 'warn', text: `<b>${unpaid.length}</b> facture(s) affichée(s) restent à encaisser : <b>${money(unpaid.reduce((s, i) => s + num(i.total) - num(i.paid), 0))}</b>. Relancez les patients à leur prochaine visite.` },
           kind === 'proforma' && rows.filter(i => i.status === 'issued').length && { icon: 'check', text: `<b>${rows.filter(i => i.status === 'issued').length}</b> proforma(s) en attente : convertissez-les en facture dès que le patient accepte le devis.` },
           sm && num(sm.invoiced_htg) > num(sm.collected_htg) && { icon: 'activity', text: `Ce mois, ${money(num(sm.invoiced_htg) - num(sm.collected_htg))} facturés n'ont pas encore été encaissés.` }])
         + card(`<div class="sw">${[['invoice', 'Factures'], ['proforma', 'Proformas']].map(([k, l]) => `<button type="button" class="${kind === k ? 'on' : ''}" data-a="bl-kind" data-id="${k}">${l}</button>`).join('')}</div>`, '',
@@ -123,7 +123,7 @@ export default function install({ $, esc, api, can, toast, render }) {
       const dv = num(md.querySelector('[name=discount]').value.replace(',', '.')), pct = md.querySelector('[name=disc_mode]').value === 'pct', d = Math.min(s, Math.round((pct ? s * dv / 100 : dv) * 100) / 100); return { s, d, n: Math.round((s - d) * 100) / 100, pct, dv } }
     const total = () => { const cur = md.querySelector('[name=currency]').value, r = calc(); md.querySelector('[data-it=s]').textContent = money(r.s, cur); md.querySelector('[data-it=d]').textContent = (r.d ? '- ' : '') + money(r.d, cur) + (r.pct && r.dv ? ` (${r.dv} %)` : ''); md.querySelector('.itot b').textContent = money(r.n, cur) }
     const v = await modal({ title: kind === 'proforma' ? 'Nouvelle proforma' : 'Nouvelle facture', icon: 'file', wide: true, ok: 'Créer le document',
-      html: `<div class="fg">${sel('Type de document', 'kind', [['invoice', 'Facture'], ['proforma', 'Proforma (devis)']], kind)}${sel('Devise', 'currency', ['HTG', 'USD'])}${fld('Patient *', 'patient_file', 'required placeholder="Tapez le nom du patient…"')}${sel('Médecin responsable', 'doctor_id', [['', 'Non précisé'], ...docs.map(d => [d.id, d.name])])}<label>Remise<span class="disc"><input name="discount" inputmode="decimal" placeholder="0"><select name="disc_mode" aria-label="Type de remise"><option value="htg">Montant</option><option value="pct">%</option></select></span></label></div>
+      html: `<div class="fg">${sel('Type de document', 'kind', [['invoice', 'Facture'], ['proforma', 'Proforma (devis)']], kind)}${sel('Devise', 'currency', ['HTG', 'USD'])}${fld('Patient *', 'patient_file', 'required placeholder="Tapez le nom du patient…"')}<label>Médecin responsable <i class="req">*</i><select name="doctor_id" required><option value="">— Choisir le médecin —</option>${docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select><small class="muted">Sa commission est calculée sur cette facture</small></label><label>Remise<span class="disc"><input name="discount" inputmode="decimal" placeholder="0"><select name="disc_mode" aria-label="Type de remise"><option value="htg">Montant</option><option value="pct">%</option></select></span></label></div>
         <h4>Prestations</h4>${tfr.length ? `<div class="qchips">${tfr.map((t, i) => `<button type="button" class="qc" data-tfi="${i}">+ ${esc(t.name)} · ${esc(tLabel(t, tf.rate))}</button>`).join('')}</div>` : ''}<div class="lnh"><span>Description</span><span>Qté</span><span>Prix unitaire</span><span></span></div><div class="lns">${lineHtml()}</div><button type="button" class="sec bs" data-addl>${ic('plus', 15)}Ajouter une ligne</button><div class="isum"><span>Total brut <b data-it="s">0</b></span><span>Remise <b data-it="d">0</b></span></div><div class="itot">Total net <b>0,00 HTG</b></div>`,
       onOpen: m => { md = m; setTimeout(total, 0); m.addEventListener('input', total); m.addEventListener('change', total)
         m.addEventListener('click', e => { const tb = e.target.closest('[data-tfi]'); if (tb) { const t = tfr[+tb.dataset.tfi], cur = m.querySelector('[name=currency]').value
@@ -145,7 +145,7 @@ export default function install({ $, esc, api, can, toast, render }) {
       md.querySelector('.itot b').textContent = money(n, d.currency); md.querySelector('.fixw').hidden = n >= d.paid - 0.001 }
     const v = await modal({ title: 'Corriger la facture ' + d.number, icon: 'edit', wide: true, ok: 'Enregistrer la correction',
       html: `<p class="note"><b>Facture verrouillée.</b> La version actuelle (${money(d.total, d.currency)}) sera conservée dans l'historique avec votre nom, la date et le motif. Déjà payé : <b>${money(d.paid, d.currency)}</b>.</p>
-        <div class="fg">${sel('Médecin responsable', 'doctor_id', [['', 'Non précisé'], ...docs.map(x => [x.id, x.name])], d.doctor_id || '')}${fld('Remise (montant)', 'discount', `inputmode="decimal" value="${d.discount || ''}"`)}</div>
+        <div class="fg"><label>Médecin responsable <i class="req">*</i><select name="doctor_id" required><option value="">— Choisir le médecin —</option>${docs.map(x => `<option value="${x.id}" ${d.doctor_id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>${fld('Remise (montant)', 'discount', `inputmode="decimal" value="${d.discount || ''}"`)}</div>
         <div class="lnh"><span>Description</span><span>Qté</span><span>Prix unitaire</span><span></span></div><div class="lns">${d.items.map(lineHtml).join('')}</div><button type="button" class="sec bs" data-addl>${ic('plus', 15)}Ajouter une ligne</button>
         <div class="itot">Nouveau total <b></b></div><div class="note fixw" style="background:#fdecec;color:#a52828" hidden>Le nouveau total est inférieur aux paiements déjà reçus : annulez d'abord un paiement.</div>
         <label class="ml">Motif de la correction *<input name="reason" required placeholder="Ex : prestation oubliée, erreur de prix"></label>`,
@@ -228,7 +228,7 @@ export default function install({ $, esc, api, can, toast, render }) {
     else if (a === 'db-csv') { const g = views._debts || [], L = [['Patient', 'N° dossier', 'Téléphone', 'Facture', 'Date', 'Médecin', 'Devise', 'Total', 'Remise', 'Payé', 'Solde', 'Ancienneté (jours)', 'Dernier paiement']]
       for (const p of g) for (const r of p.inv) L.push([p.name, p.file, p.phone || '', r.number, fdate(r.created_at), r.doctor || '', r.currency, r.total, r.discount, r.paid, r.balance, r.age_days, r.last_payment ? fdate(r.last_payment) : ''])
       const csv = '\ufeff' + L.map(l => l.map(x => `"${String(x ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n'), a2 = document.createElement('a')
-      a2.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); a2.download = `dettes-patients-${new Date().toISOString().slice(0, 10)}.csv`; a2.click(); setTimeout(() => URL.revokeObjectURL(a2.href), 2000); toast('Export prêt : ouvrez le fichier avec Excel') }
+      a2.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); a2.download = `dettes-patients-${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })}.csv`; a2.click(); setTimeout(() => URL.revokeObjectURL(a2.href), 2000); toast('Export prêt : ouvrez le fichier avec Excel') }
     else if (a === 'tf-new') await tariffModal()
     else if (a === 'tf-edit') { const all = (await api('/tariffs?all=1')).rows; await tariffModal(all.find(t => t.id === id)) }
     else if (a === 'tf-act') { await api(`/tariffs/${id}`, { active: b.dataset.on === '1' }); resetTariffs(); toast(b.dataset.on === '1' ? 'Tarif réactivé' : 'Tarif désactivé'); render() }

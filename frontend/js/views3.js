@@ -2,7 +2,7 @@ import { ic } from './icons.js'
 import { num, money, qty, fdate, fdt, monthLabel, head, btn, bs, kpi, kpis, badge, pbar, empty, card, search, fld, sel, modal, noRes, tips } from './kit.js'
 export default function install({ $, esc, api, can, toast, render }) {
   const F = e => Object.fromEntries(new FormData(e.target)), pid = () => location.hash.split('/')[1]
-  let tab = 'general', tooth = null, month = new Date().toISOString().slice(0, 7)
+  let tab = 'general', tooth = null, month = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7)
   const COL = { saine: '#d7f0e0', carie: '#f6c6c6', extraite: '#d9d9d9', a_extraire: '#ffd9a8', restauree: '#cfe3fb', couronne: '#e6d5fa', implant: '#c8efef', bridge: '#f3eec0', anomalie: '#ffb3d1' }
   const UP = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28], LOW = [48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38]
   const HB = ['diabetes', 'hemophilia', 'hiv', 'smoking', 'alcohol', 'pregnancy', 'cardiovascular', 'pulmonary', 'epilepsy', 'stomach', 'cancer', 'migraines']
@@ -33,7 +33,7 @@ export default function install({ $, esc, api, can, toast, render }) {
     },
     async stock() {
       const fin = can('manage_finances'), [prods, sups, purs, al] = await Promise.all([api('/products'), api('/suppliers'), api('/purchases'), api('/stock/alerts')]); cache = { prods, sups }
-      const today = new Date().toISOString().slice(0, 10), soon = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10), value = prods.reduce((s, p) => s + num(p.value), 0)
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), soon = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10), value = prods.reduce((s, p) => s + num(p.value), 0)
       const lvl = p => { const s = num(p.stock), m = num(p.min_stock); return s <= 0 ? ['Rupture', 'st-off', 'var(--err)'] : s <= m ? ['Stock faible', 'st-warn', 'var(--warn)'] : ['Disponible', 'st-ok', 'var(--ok)'] }
       const exp = d => { if (!d) return '<span class="muted">—</span>'; const x = String(d).slice(0, 10); return x < today ? badge('Expiré · ' + fdate(d), 'st-off') : x <= soon ? badge(fdate(d), 'st-warn') : fdate(d) }
       const prow = p => { const [l, c, col] = lvl(p), m = num(p.min_stock), s = num(p.stock)
@@ -119,7 +119,7 @@ export default function install({ $, esc, api, can, toast, render }) {
         submit: f => { if (f.from === f.to) throw new Error('Choisissez deux caisses différentes'); return api('/cash/transfer', { ...f, amount: D(f.amount) }) } })) },
     'cs-close': async () => { if (!needs(cache.acc, "Créez d'abord une caisse")) return; let r
       const v = await modal({ title: 'Clôturer la journée', icon: 'lockday', ok: 'Clôturer',
-        html: `<p class="note">Comptez l'argent présent dans la caisse : l'écart avec le solde théorique est enregistré.</p><div class="fg">${sel('Caisse *', 'account_id', pick(cache.acc, accLabel), '', 's2')}${fld('Journée *', 'day', `type="date" required value="${new Date().toISOString().slice(0, 10)}"`)}${fld('Solde physique compté *', 'physical', 'required inputmode="decimal"')}</div>`,
+        html: `<p class="note">Comptez l'argent présent dans la caisse : l'écart avec le solde théorique est enregistré.</p><div class="fg">${sel('Caisse *', 'account_id', pick(cache.acc, accLabel), '', 's2')}${fld('Journée *', 'day', `type="date" required value="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })}"`)}${fld('Solde physique compté *', 'physical', 'required inputmode="decimal"')}</div>`,
         submit: async f => { r = await api('/cash/close', { ...f, physical: D(f.physical) }) } })
       if (v && r) { toast('Journée clôturée · écart : ' + r.diff); render() } },
     'cs-exp': async () => ok('Dépense enregistrée', await modal({ title: 'Nouvelle dépense', icon: 'receipt', wide: true, ok: 'Enregistrer la dépense',

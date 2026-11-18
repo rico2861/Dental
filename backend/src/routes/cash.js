@@ -43,7 +43,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       await c.query("update expenses set status='paid', paid_at=now() where id=$1", [e.id]); await c.query("select cash_post($1,$2,'out',$3,$4,$5,'expense',$6,$7)", [req.user.clinic_id, e.currency, e.amount, ref('DEP'), e.category, e.id, req.user.id]); return {} })
     if (!out.err) await audit(req, 'EXPENSE_PAID', 'expenses', req.params.id); done(res, out, () => ({ ok: true })) }))
   app.get('/api/finance/summary', need('view_finances'), wrap(async (req, res) => {
-    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toISOString().slice(0, 7) + '-01', c = req.user.clinic_id
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month + '-01' : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }).slice(0, 7) + '-01', c = req.user.clinic_id
     const W = "$2::date and created_at<($2::date+interval '1 month')"
     res.json((await q(`select
       (select coalesce(sum(case when currency='HTG' then total else total*coalesce(rate_htg_per_usd,0) end),0) from invoices where clinic_id=$1 and kind='invoice' and status='issued' and created_at>=${W})::numeric(14,2)::text invoiced_htg,
