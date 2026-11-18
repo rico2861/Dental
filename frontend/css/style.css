@@ -946,3 +946,10 @@ a.kvr{text-decoration:none;color:inherit}a.kvr:hover{background:#f8fafd}
 .mbd [data-who][hidden]{display:none!important}
 @media (max-width:900px){.qcap{grid-template-columns:1fr 1fr}.qcapi{grid-column:1/-1}.qcapn{border-left:0;border-top:1px solid #edf1f6}.qcfg{grid-template-columns:repeat(3,1fr)}.qcalli{grid-template-columns:auto 1fr}.qcalli .qact{grid-column:1/-1}}
 @media (max-width:560px){.qrow{grid-template-columns:auto 1fr;grid-template-areas:"n m" "r r" "a a"}.qrank{justify-self:start}.qcfg{grid-template-columns:repeat(2,1fr)}}
+
+/* v40 : panneau de gauche sobre */
+.lgmid{display:flex;flex-direction:column;align-items:flex-start}
+.lgart{display:grid;place-items:center;width:96px;height:96px;border-radius:28px;margin-bottom:26px;background:linear-gradient(145deg,rgba(124,196,255,.22),rgba(94,234,212,.12));border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 50px -20px rgba(56,189,248,.5)}
+.lgart svg{width:52px;height:52px;opacity:.95}
+.lgmid h1{margin:0 0 10px;font-size:clamp(30px,3.2vw,42px)}
+.lgmid>p{margin:0;max-width:380px}

@@ -6,6 +6,10 @@ import { fileURLToPath } from 'url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')   // …/backend
 dotenv.config({ path: path.join(ROOT, '.env') })
 
+// hébergement (Railway, Render, Fly…) : les données vont sur le disque permanent (volume) s'il existe
+export const HOSTED = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RENDER || process.env.FLY_APP_NAME)
+export const VOLUME = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_ROOT || ''
+if (VOLUME) { process.env.DB_DIR ||= path.join(VOLUME, 'db'); process.env.STORAGE_DIR ||= path.join(VOLUME, 'storage'); process.env.BACKUP_DIR ||= path.join(VOLUME, 'backups') }
 if (!process.env.STORAGE_DIR) process.env.STORAGE_DIR = path.join(ROOT, 'storage')
 else process.env.STORAGE_DIR = path.resolve(ROOT, process.env.STORAGE_DIR)
 
@@ -14,6 +18,7 @@ export const config = {
   root: ROOT,
   secret: process.env.JWT_SECRET,
   prod: process.env.NODE_ENV === 'production',
+  hosted: HOSTED, volume: VOLUME,
   port: Number(process.env.PORT) || 3000,
   get dbDir() { const d = process.env.DB_DIR; return d ? (d.startsWith('memory://') ? d : path.resolve(ROOT, d)) : path.join(ROOT, 'data', 'db') },
   storageDir: process.env.STORAGE_DIR,

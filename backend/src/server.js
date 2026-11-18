@@ -26,6 +26,8 @@ const app = express()
 app.set('trust proxy', 1)
 // réseau local en HTTP : pas de redirection forcée vers HTTPS (sinon les autres postes n'affichent qu'une page blanche)
 app.use(helmet({ contentSecurityPolicy: { directives: { upgradeInsecureRequests: null } }, hsts: false, crossOriginOpenerPolicy: false, originAgentCluster: false })); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
+// données privées : aucune réponse de l'API ne doit être gardée par un cache (CDN de l'hébergeur, proxy, navigateur)
+app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store, private'); res.setHeader('CDN-Cache-Control', 'no-store'); next() })
 // mode mono-utilisateur pendant une restauration : toute autre requête est refusée proprement
 app.use((req, res, next) => maintenance.on && req.path.startsWith('/api/') && req.path !== '/api/health' ? res.status(503).json({ error: (maintenance.why || 'Restauration en cours') + ' : réessayez dans un instant', code: 'MAINTENANCE' }) : next())
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next)
@@ -247,7 +249,7 @@ const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); ta
 app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
 // adresses du réseau local : les autres ordinateurs, tablettes et téléphones connectés au même Wi-Fi / réseau ouvrent l'une d'elles
 const lanUrls = () => Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal && !/^169.254./.test(i.address)).map(i => `http://${i.address}:${config.port}`)
-app.get('/api/network', need(), (req, res) => res.json({ port: config.port, urls: lanUrls(), firewall: `New-NetFirewallRule -DisplayName "DENTAL LIGHT" -Direction Inbound -Protocol TCP -LocalPort ${config.port} -Action Allow -Profile Private,Domain` }))
+app.get('/api/network', need(), (req, res) => res.json({ port: config.port, hosted: config.hosted, urls: config.hosted ? (process.env.RAILWAY_PUBLIC_DOMAIN ? ['https://' + process.env.RAILWAY_PUBLIC_DOMAIN] : []) : lanUrls(), firewall: `New-NetFirewallRule -DisplayName "DENTAL LIGHT" -Direction Inbound -Protocol TCP -LocalPort ${config.port} -Action Allow -Profile Private,Domain` }))
 app.use('/api', (req, res) => fail(res, 404, 'Route inconnue'))
 app.use(express.static(config.frontendDir, { etag: true, setHeaders: (res, f) => { if (/.(js|css|html)$/.test(f)) res.setHeader('Cache-Control', 'no-cache') } }))   // l'interface est toujours revérifiée : jamais d'ancienne version affichée
 app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail(res, 413, 'Fichier trop volumineux (10 Mo maximum)') : fail(res, 500, 'Erreur serveur') })
@@ -255,7 +257,8 @@ app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail
   try { await migrate(c, () => {}); if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {}) } finally { c.release() } }
 try { const r = await protectExisting(q, config.storageDir); if (r.rows || r.files) console.log(`Données médicales chiffrées : ${r.rows} enregistrement(s), ${r.files} document(s)`) } catch (e) { console.error('Chiffrement des données :', e.message) }
 try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
-const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { console.log('DENTAL LIGHT prêt sur le port', config.port); const u = lanUrls(); if (u.length) { console.log('Sur les autres appareils du même réseau, ouvrez :'); u.forEach(x => console.log('   ' + x)); console.log("(Si la page ne s'ouvre pas : autorisez le port " + config.port + " dans le pare-feu Windows, voir Utilisateurs → Accès réseau)") } })
+const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { console.log('DENTAL LIGHT prêt sur le port', config.port); if (config.hosted) { const d = process.env.RAILWAY_PUBLIC_DOMAIN; console.log(d ? 'Adresse publique : https://' + d : 'Aucune adresse publique : Railway → service → Settings → Networking → Generate Domain (port ' + config.port + ')'); console.log(config.volume ? 'Données sur le volume : ' + config.volume : 'ATTENTION : aucun volume, les données seront effacées au prochain redéploiement'); return }
+  const u = lanUrls(); if (u.length) { console.log('Sur les autres appareils du même réseau, ouvrez :'); u.forEach(x => console.log('   ' + x)); console.log("(Si la page ne s'ouvre pas : autorisez le port " + config.port + " dans le pare-feu Windows, voir Utilisateurs → Accès réseau)") } })
 if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)

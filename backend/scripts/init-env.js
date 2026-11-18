@@ -6,7 +6,25 @@ import { fileURLToPath } from 'url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), envp = path.join(root, '.env')
 const secret = () => crypto.randomBytes(48).toString('hex')
-if (!fs.existsSync(envp)) {
+// hébergé (Railway…) : la configuration vient des variables du service, jamais d'un .env éphémère
+const hosted = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RENDER || process.env.FLY_APP_NAME)
+if (hosted) {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    console.error([
+      '',
+      '✖ Variable manquante : JWT_SECRET (au moins 32 caractères).',
+      '  Elle chiffre les données médicales et les sessions : elle doit rester TOUJOURS la même.',
+      '  Railway → votre service → Variables → New Variable → JWT_SECRET',
+      "  (valeur : celle de JWT_SECRET dans votre backend/.env local, ou une nouvelle valeur longue si la base est vide), puis redéployez.",
+      ''].join('\n'))
+    process.exit(1)
+  }
+  if (!process.env.RAILWAY_VOLUME_MOUNT_PATH && !process.env.DATA_ROOT) console.warn([
+    '',
+    '⚠ AUCUN VOLUME : la base, les documents et les sauvegardes seront EFFACÉS à chaque redéploiement.',
+    '  Railway → votre service → clic droit → Attach Volume → chemin de montage : /data',
+    ''].join('\n'))
+} else if (!fs.existsSync(envp)) {
   const pw = crypto.randomBytes(9).toString('base64url') + '!1a'
   let t = fs.readFileSync(path.join(root, '.env.example'), 'utf8')
   t = t.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=' + secret()).replace(/^OWNER_PASSWORD=.*$/m, 'OWNER_PASSWORD=' + pw)
