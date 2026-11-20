@@ -215,3 +215,59 @@ export function consultationPdf(doc, d) { const { clinic: cl, p, c } = d, a = ag
   textBox(doc, 'Motif de la consultation', c.reason); textBox(doc, 'Diagnostic', c.diagnosis); textBox(doc, 'Traitement réalisé', c.treatment); textBox(doc, 'Observations et recommandations', c.notes)
   signatures(doc)
 }
+
+// ── Fiche diagnostique : même présentation que la fiche papier de la clinique (remplie, ou vierge à imprimer) ──
+const MAR = { single: 'Célibataire', married: 'Marié(e)', divorced: 'Divorcé(e)', widowed: 'Veuf / veuve', cohabiting: 'Concubinage', celibataire: 'Célibataire', marie: 'Marié(e)' }
+export function diagnosticPdf(doc, { clinic: cl = {}, p = null, h = {}, exam = null, teeth = new Map(), doctor = null }) {
+  const L = 40, w = W(doc), blank = !p, val = v => blank || v == null || v === '' ? '' : sp(v)
+  const yn = v => blank || v == null || v === '' ? '' : v === true || v === 'oui' || v === 'yes' ? 'Oui' : v === false || v === 'non' || v === 'no' ? 'Non' : sp(v)
+  // en-tête : nom de la clinique, adresse, téléphone
+  doc.fillColor('#111').font('Helvetica-Bold').fontSize(26).text(sp((cl.name || 'DENTAL LIGHT').toUpperCase()), L, 34, { width: w, align: 'center' })
+  doc.font('Helvetica-Bold').fontSize(10.5).text(sp('ADRESSE : ' + (cl.address || '').toUpperCase()), L, doc.y + 2, { width: w, align: 'center' })
+  doc.text(sp('TÉL : ' + (cl.phone || '')), L, doc.y + 1, { width: w, align: 'center' })
+  let y = doc.y + 6; doc.moveTo(L, y).lineTo(L + w, y).lineWidth(1.6).strokeColor('#111').stroke()
+  doc.font('Helvetica-Bold').fontSize(14).text('Fiche diagnostique', L, y + 8, { width: w, align: 'center' })
+  if (p) doc.font('Helvetica').fontSize(8).fillColor('#555').text(sp(`Dossier ${p.file_number} · édité le ${fd(new Date())}`), L, y + 11, { width: w, align: 'right' })
+  const title = (t, x, yy) => { doc.font('Helvetica-Bold').fontSize(11).fillColor('#111').text(t, x, yy, { underline: true, lineBreak: false }) }
+  // champ « libellé + valeur » (ligne pointillée pour écrire à la main si vide)
+  const field = (label, value, x, yy, lw, fw) => { doc.font('Helvetica').fontSize(10).fillColor('#111').text(label, x, yy, { width: lw, lineBreak: false })
+    const vx = x + lw, vw = fw - lw; doc.moveTo(vx, yy + 11).lineTo(vx + vw, yy + 11).lineWidth(.6).strokeColor('#999').stroke()
+    if (value) doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#0f2a6b').text(value, vx + 3, yy - 0.5, { width: vw - 4, lineBreak: false, ellipsis: true }) }
+  // 1. renseignements personnels
+  y += 34; title('Renseignement Personnel :', L, y); y += 22
+  const age = p?.birth_date ? Math.floor((Date.now() - new Date(p.birth_date)) / 31557600000) + ' ans' : ''
+  const c1 = [['Nom :', val(p?.last_name)], ['Prénom :', val(p?.first_name)], ['Tél. :', val([p?.phone, p?.phone2].filter(Boolean).join(' / '))], ['Âge :', val(age)]]
+  const c2 = [['Département :', val(p?.department)], ['Zone :', val(p?.zone)], ["Nombre d'enfants :", val(p?.children_count)], ['Sexe :', blank ? '' : p.sex === 'M' ? 'Masculin' : p.sex === 'F' ? 'Féminin' : '']]
+  c1.forEach(([l, v], i) => field(l, v, L, y + i * 18, 52, 165)); c2.forEach(([l, v], i) => field(l, v, L + 180, y + i * 18, 92, 175))
+  doc.font('Helvetica').fontSize(10).fillColor('#111').text('Statut matrimonial :', L + 370, y, { width: w - 370, lineBreak: false }); field('', blank ? '' : sp(MAR[p.marital_status] || p.marital_status || ''), L + 370, y + 18, 0, w - 370)
+  // 2. histoire médicale (gauche) et examen stomatologique (droite)
+  y += 4 * 18 + 16; title('Histoire Médicale :', L, y); title('Examen Stomatologique :', L + 290, y); y += 22
+  const HIST = [['Tension artérielle', 'blood_pressure'], ['Diabète', 'diabetes'], ['Hémophilie', 'hemophilia'], ['VIH / Sida', 'hiv'], ['Fumez-vous', 'smoking'], ['Êtes-vous alcoolique', 'alcohol'], ['Êtes-vous enceinte', 'pregnancy'], ['Groupe sanguin', 'blood_group'], ['Brossage', 'brushing'], ['Fréquente migraine', 'migraines'], ['Maladie cardiovasculaire', 'cardiovascular'], ['Maladie pulmonaire', 'pulmonary'], ['Épilepsie', 'epilepsy'], ['Problème estomac', 'stomach'], ['Allergies', 'allergies'], ['Cancer', 'cancer']]
+  HIST.forEach(([l, k], i) => field(l, ['blood_pressure', 'blood_group', 'brushing', 'allergies'].includes(k) ? val(h?.[k]) : yn(h?.[k]), L, y + i * 18.5, 132, 265))
+  const EX = [['Tête', 'head'], ['Visage', 'face'], ['ATM', 'atm'], ['Langue', 'tongue'], ['Parodontie', 'periodontium'], ['Morphologie dentaire', 'tooth_morphology']]
+  EX.forEach(([l, k], i) => field(l, val(exam?.[k]), L + 290, y + i * 18.5, l.length > 12 ? 108 : 70, w - 290))
+  if (!blank && exam?.observations) { doc.font('Helvetica').fontSize(9).fillColor('#111').text('Observations :', L + 290, y + 6 * 18.5 + 6); doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f2a6b').text(sp(exam.observations), L + 290, doc.y + 2, { width: w - 290, height: 80, ellipsis: true }) }
+  // 3. renseignements bucco-dentaires : légende + odontogramme (numérotation FDI)
+  y += HIST.length * 18.5 + 14; title('Renseignement Bucco-Dentaire', L, y); y += 20
+  const mark = (kind, x, yy, r = 4) => { doc.save().lineWidth(1.4).strokeColor('#111').fillColor('#111')
+    if (kind === 'carie') doc.circle(x, yy, r).fill(); else if (kind === 'extraire') { doc.moveTo(x - r, yy - r).lineTo(x + r, yy + r).moveTo(x + r, yy - r).lineTo(x - r, yy + r).stroke() } else doc.circle(x, yy, r).stroke()
+    doc.restore() }
+  ;[['Pour les dents cariées', 'carie'], ['Pour les dents à extraire', 'extraire'], ['Pour les dents déjà extraites', 'extraite']].forEach(([t, k], i) => { doc.font('Helvetica').fontSize(10).fillColor('#111').text(t, L, y + i * 16, { lineBreak: false }); mark(k, L + doc.widthOfString(t) + 12, y + i * 16 + 5) })
+  y += 3 * 16 + 8
+  const kindOf = s => s === 'carie' ? 'carie' : s === 'a_extraire' ? 'extraire' : ['extraite', 'absente'].includes(s) ? 'extraite' : null
+  const cw = (w - 16) / 16, ch = 22
+  const grid = (rows, x0) => rows.forEach((row, r) => row.forEach((t, i) => { const x = x0 + i * cw, yy = y + r * ch
+    doc.rect(x, yy, cw, ch).lineWidth(1).strokeColor('#111').stroke()
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#111').text(`${Math.floor(t / 10)}.${t % 10}`, x, yy + 6.5, { width: cw, align: 'center', lineBreak: false })
+    const k = !blank && kindOf(teeth.get(t)); if (k) mark(k, x + cw - 6, yy + 6, 3.2) }))
+  grid([[18, 17, 16, 15, 14, 13, 12, 11], [48, 47, 46, 45, 44, 43, 42, 41]], L)
+  grid([[21, 22, 23, 24, 25, 26, 27, 28], [31, 32, 33, 34, 35, 36, 37, 38]], L + 8 * cw + 16)
+  y += 2 * ch + 18
+  // détartrage : grade I, II ou III (entouré s'il est renseigné)
+  doc.font('Helvetica-Bold').fontSize(11).fillColor('#111').text('Détartrage grade', L, y, { lineBreak: false })
+  const g = String(blank ? '' : h?.scaling_grade || '').toUpperCase().replace(/^GRADE\s*/, '').trim()
+  ;['I', 'II', 'III'].forEach((n, i) => { const x = L + 150 + i * 60; doc.font('Helvetica-Bold').fontSize(11).text(n, x, y, { width: 26, align: 'center', lineBreak: false }); if (g === n || g === String(i + 1)) doc.circle(x + 13, y + 5, 11).lineWidth(1.3).strokeColor('#0f2a6b').stroke() })
+  // signature
+  y += 40; const sig = (t, x) => { doc.moveTo(x, y + 20).lineTo(x + 180, y + 20).lineWidth(.6).strokeColor('#999').stroke(); doc.font('Helvetica').fontSize(9).fillColor('#555').text(t, x, y + 24, { width: 180, align: 'center' }) }
+  sig(blank || !doctor ? 'Médecin' : sp('Dr ' + doctor), L); sig('Date : ' + (blank ? '' : fd(new Date())), L + w - 180)
+}

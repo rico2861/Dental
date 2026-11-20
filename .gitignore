@@ -8,3 +8,10 @@ __pycache__/
 .DS_Store
 
 backend/data/
+
+# données patients et copies de restauration : jamais sur GitHub
+backend/storage*/
+backend/data*/
+backend/backups*/
+*.avant-restauration-*
+*kit-recuperation*.txt

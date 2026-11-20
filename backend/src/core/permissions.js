@@ -5,7 +5,7 @@ const ADMINISH = ALL.filter(p => p !== 'manage_exchange_rates')
 export const ROLES = {
   OWNER: ALL, ADMIN: ADMINISH, ADMIN_MEDICAL: ['view_all_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses'],
   ADMIN_FINANCIER: ['view_finances','manage_finances','view_salaries','export_reports'],
-  DENTIST: ['view_all_patients','view_assigned_patients','view_medical_records','edit_medical_records','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses'], DENTAL_ASSISTANT: ['view_assigned_patients','manage_queue'],
+  DENTIST: ['view_all_patients','view_assigned_patients','create_patients','view_medical_records','edit_medical_records','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses'], DENTAL_ASSISTANT: ['view_assigned_patients','manage_queue'],
   SECRETARY: ['view_all_patients','create_patients','edit_patients','manage_appointments','manage_queue'], ACCOUNTANT: ['view_finances','manage_finances','view_salaries','export_reports'],
   STOCK_MANAGER: ['manage_inventory'], DENTAL_TECH: ['manage_prostheses'], STAFF: [] }
 

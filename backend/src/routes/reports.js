@@ -53,12 +53,17 @@ CAT.my_acts = { perm: 'view_medical_records', doctorOnly: 1, title: 'Mes actes e
       coalesce((select sum(y.amount_htg) from payments y where y.invoice_id=i.id and y.voided_at is null and ${BT('y.created_at')}),0) collected from invoices i where i.clinic_id=$1 and i.doctor_id=$4 and i.kind='invoice' and i.status<>'cancelled')
     select ${L('x.created_at')}::text date,x.number invoice,p.last_name||' '||p.first_name patient,(select string_agg(description,', ') from invoice_items where invoice_id=x.id) acte,x.billed::numeric(14,2)::text billed_htg,x.collected::numeric(14,2)::text collected_htg,e.pct::text pct,
       round((case when b.basis='billed' then x.billed else x.collected end)*e.pct/100,2)::text commission from x join patients p on p.id=x.patient_id cross join b cross join e where x.billed>0 or x.collected>0 order by x.created_at` }
+// Mes fiches de paie : chaque membre du personnel (tous les rôles) voit et exporte uniquement les siennes
+CAT.my_pay = { perm: null, selfPay: 1, title: 'Mes fiches de paie', cols: "period:Mois,base:Salaire de base (HTG):n,commissions:Commissions (HTG):n,bonuses:Primes (HTG):n,deductions:Retenues (HTG):n,net:Net à payer (HTG):n,paid:Versé (HTG):n,rest:Reste à verser (HTG):n,status:Statut",
+  sql: `select r.period,r.base::text base,r.commissions::text commissions,r.bonuses::text bonuses,(r.deductions+coalesce(r.other_deductions,0))::numeric(14,2)::text deductions,r.net::text net,r.paid::text paid,greatest(r.net-r.paid,0)::numeric(14,2)::text rest,
+    case r.status when 'paid' then 'Payé' when 'partial' then 'Partiellement payé' else 'À payer' end status
+    from payroll_records r join employees e on e.id=r.employee_id where r.clinic_id=$1 and e.user_id=$4 and r.period between to_char($2::date,'YYYY-MM') and to_char($3::date,'YYYY-MM') order by r.period desc` }
 // Un médecin simple (rôle DENTIST) ne voit que ses propres données dans les rapports
 const MINE = { patients: ['Mes patients', s => s.replace('from patients where clinic_id=$1', 'from patients where clinic_id=$1 and (primary_doctor_id=$4 or exists(select 1 from consultations c where c.patient_id=patients.id and c.doctor_id=$4) or exists(select 1 from invoices i where i.patient_id=patients.id and i.doctor_id=$4))')],
   consultations: ['Mes consultations', s => s.replace('where c.clinic_id=$1', 'where c.clinic_id=$1 and c.doctor_id=$4')], doctors: ['Mon activité', s => s.replace("where u.clinic_id=$1 and u.status='active'", "where u.clinic_id=$1 and u.id=$4 and u.status='active'")] }
 for (const [k, [title, fn]] of Object.entries(MINE)) { CAT[k].mineTitle = title; CAT[k].mine = fn(CAT[k].sql); if (CAT[k].mine === CAT[k].sql) throw new Error('Rapport personnel non restreint : ' + k) }
 const DOC_ROLES = ['DENTIST', 'OWNER', 'ADMIN_MEDICAL', 'ADMIN'], selfOnly = req => req.user.role === 'DENTIST'
-const visible = (req, r) => req.perms.has(r.perm) && (!r.doctorOnly || DOC_ROLES.includes(req.user.role)) && (!selfOnly(req) || r.mine || r.doctorOnly)
+const visible = (req, r) => (r.perm == null || req.perms.has(r.perm)) && (!r.doctorOnly || DOC_ROLES.includes(req.user.role)) && (!selfOnly(req) || r.mine || r.doctorOnly || r.selfPay) && !(r.selfPay && req.user.role === 'OWNER')
 for (const r of Object.values(CAT)) r.cols = r.cols.split(',').map(s => s.split(':'))
 const safe = v => { v = v == null ? '' : String(v); return /^[=+\-@\t\r]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v) ? "'" + v : v }
 const csv = (cols, rows) => '\ufeffsep=;\r\n' + [cols.map(c => c[1]), ...rows.map(r => cols.map(c => safe(r[c[0]])))].map(l => l.map(v => /[",;\n\r]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : v).join(';')).join('\r\n')
@@ -66,9 +71,9 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   app.get('/api/reports', need(), (req, res) => res.json(Object.entries(CAT).filter(([, r]) => visible(req, r)).map(([key, r]) => ({ key, title: selfOnly(req) && r.mineTitle || r.title, noRange: !!r.noRange }))))
   app.get('/api/reports/:type', need(), wrap(async (req, res) => {
     const r0 = CAT[req.params.type]; if (!r0 || !visible(req, r0)) return fail(res, 403, 'Rapport non autorisé')
-    const own = selfOnly(req) && r0.mine, r = { ...r0, sql: own ? r0.mine : r0.sql, title: own ? r0.mineTitle : r0.title }, uid = (own || r0.doctorOnly) ? [req.user.id] : []
+    const own = selfOnly(req) && r0.mine, r = { ...r0, sql: own ? r0.mine : r0.sql, title: own ? r0.mineTitle : r0.title }, uid = (own || r0.doctorOnly || r0.selfPay) ? [req.user.id] : []
     const to = D(req.query.to) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), from = D(req.query.from) || to.slice(0, 8) + '01', fmt = req.query.format || 'json'
-    if (fmt !== 'json' && !req.perms.has('export_reports')) return fail(res, 403, "Permission d'export requise")
+    if (fmt !== 'json' && !req.perms.has('export_reports') && !r0.selfPay) return fail(res, 403, "Permission d'export requise")
     let rows = (await q(r.sql, r.noRange ? [req.user.clinic_id] : [req.user.clinic_id, from, to, ...uid])).rows.slice(0, 20000)
     if (req.params.type === 'stock') rows = rows.map(x => ({ ...x, to_order: Number(x.stock) <= Number(x.min_stock) ? 'Oui' : '' }))
     const name = `${req.params.type}-${from}_${to}`, head = r.noRange ? r.title : `${r.title} — du ${from} au ${to}`

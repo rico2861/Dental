@@ -8,7 +8,9 @@ const totpStep = (secret, code, last) => { const now = Math.floor(Date.now() / 3
 const key = () => crypto.createHash('sha256').update('dl-totp:' + process.env.JWT_SECRET).digest()
 const enc = t => { const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', key(), iv), ct = Buffer.concat([c.update(t, 'utf8'), c.final()]); return Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64') }
 const dec = s => { const b = Buffer.from(s, 'base64'), d = crypto.createDecipheriv('aes-256-gcm', key(), b.subarray(0, 12)); d.setAuthTag(b.subarray(12, 28)); return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8') }
-export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
+// notifications : seulement ce qui demande une attention (sécurité, échecs, décisions) ; le reste reste dans le journal d'activité
+export const QUIET = ['user_role', '2fa_enabled', 'rate_changed']
+export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => QUIET.includes(kind) ? Promise.resolve() : q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
 // ── codes à usage unique : envoyés par e-mail, ou délivrés par la direction (fonctionnent sans Internet) ──
 import { sendMail } from '../lib/mail.js'
 export const maskEmail = e => String(e || '').replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b)
@@ -88,6 +90,6 @@ export default function (app, { q, pool, need, auth, audit, fail, wrap, clean })
     const all = req.query.all === '1' && (req.perms.has('view_audit_logs') || req.perms.has('manage_users'))
     res.json((await q(`select h.created_at,h.email,h.success,h.reason,h.ip::text ip,h.user_agent from login_history h where ${all ? 'h.clinic_id=$1' : 'h.user_id=$1'} order by h.id desc limit 200`, [all ? req.user.clinic_id : req.user.id])).rows) }))
   const VIS = "n.clinic_id=$1 and (n.user_id=$3 or (n.user_id is null and (n.perm is null or n.perm=any($2))))"
-  app.get('/api/notifications', auth, wrap(async (req, res) => res.json((await q(`select n.id,n.kind,n.title,n.text,n.created_at,(r.user_id is null) unread from notifications n left join notification_reads r on r.notification_id=n.id and r.user_id=$3 where ${VIS} order by n.created_at desc limit 50`, [req.user.clinic_id, [...req.perms], req.user.id])).rows)))
+  app.get('/api/notifications', auth, wrap(async (req, res) => res.json((await q(`select n.id,n.kind,n.title,n.text,n.created_at,(r.user_id is null) unread from notifications n left join notification_reads r on r.notification_id=n.id and r.user_id=$3 where ${VIS} and n.kind <> all($4) order by n.created_at desc limit 50`, [req.user.clinic_id, [...req.perms], req.user.id, QUIET])).rows)))
   app.post('/api/notifications/read', auth, wrap(async (req, res) => { await q(`insert into notification_reads(notification_id,user_id) select n.id,$3 from notifications n where ${VIS}${/^[0-9a-f-]{36}$/i.test(req.body?.id || '') ? ' and n.id=$4' : ''} on conflict do nothing`, [req.user.clinic_id, [...req.perms], req.user.id, ...(/^[0-9a-f-]{36}$/i.test(req.body?.id || '') ? [req.body.id] : [])]); res.json({ ok: true }) }))   // une seule (id) ou toutes
 }

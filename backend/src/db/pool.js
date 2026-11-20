@@ -56,4 +56,7 @@ export const q = (text, params) => pool.query(text, params)
 // copie complète et cohérente de la base (aucune requête ne passe pendant l'export)
 export const dumpDb = async () => { const release = await acquire(); try { return await db.dumpDataDir('gzip') } finally { release() } }
 // même copie + position exacte du journal des transactions au même instant (la valeur stockée dans la copie est pré-allouée)
-export const dumpDbWithLsn = async () => { const release = await acquire(); try { let lsn = null; try { const r = (await run('select last_value, is_called from dl_changelog_lsn_seq', [])).rows[0]; lsn = r.is_called ? Number(r.last_value) : Number(r.last_value) - 1 } catch {} return { blob: await db.dumpDataDir('gzip'), lsn } } finally { release() } }
+export const dumpDbWithLsn = async (countTables = []) => { const release = await acquire(); try { let lsn = null; const counts = {}
+    // comptages faits sous le même verrou que la copie : aucune écriture ne peut se glisser entre les deux
+    for (const t of countTables) { try { counts[t] = Number((await run(`select count(*)::int n from ${t}`, [])).rows[0].n) } catch {} }
+    try { const r = (await run('select last_value, is_called from dl_changelog_lsn_seq', [])).rows[0]; lsn = r.is_called ? Number(r.last_value) : Number(r.last_value) - 1 } catch {} return { blob: await db.dumpDataDir('gzip'), lsn, counts } } finally { release() } }

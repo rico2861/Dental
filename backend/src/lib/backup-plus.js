@@ -27,6 +27,10 @@ const saveChain = c => { fs.mkdirSync(CH(), { recursive: true }); fs.writeFileSy
 // nouvelle chaîne après toute restauration : les anciens journaux restent utilisables avec les anciennes complètes
 export const bumpEpoch = () => { const c = chain(); c.epoch = (c.epoch || 1) + 1; c.cursor = null; saveChain(c); return c.epoch }
 export const maintenance = { on: false, why: null, since: null }
+// kit de récupération (clé de chiffrement) : date du dernier téléchargement
+const KIT = () => path.join(BDIR(), 'kit.json')
+export const kitInfo = () => readJson(KIT(), null)
+export const kitDownloaded = by => fs.writeFileSync(KIT(), JSON.stringify({ at: new Date().toISOString(), by }))
 
 const qi = s => '"' + String(s).replace(/"/g, '""') + '"'
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 23)   // à la milliseconde : jamais deux sauvegardes avec le même nom
@@ -66,7 +70,7 @@ export function afterFull(man, dir, ix) {
 export async function afterFullWritten(man) {
   const s = getSettings()
   // journal désactivé : ce qui est dans la complète n'a pas besoin d'être gardé dans le journal
-  if (!(s.log_minutes > 0) && man.lsn != null) { await q('delete from dl_changelog where lsn <= $1', [man.lsn]).catch(() => {}); const c = chain(); if (c.cursor != null) { c.cursor = null; saveChain(c) } }
+  if (!(s.log_minutes > 0 && s.auto) && man.lsn != null) { await q('delete from dl_changelog where lsn <= $1', [man.lsn]).catch(() => {}); const c = chain(); if (c.cursor != null) { c.cursor = null; saveChain(c) } }
   const m = mirrorDir(man.id, path.join(BDIR(), man.id), 'db.tar.gz', man.db_sha256)
   if (m) { man.mirror = m; fs.writeFileSync(path.join(BDIR(), man.id, 'manifest.json'), JSON.stringify(man, null, 1)) } }
 
@@ -274,8 +278,10 @@ export async function strategyInfo() {
   if (cur && Date.now() - new Date(cur.created_at) > 7 * 864e5) A.push({ tone: 'info', icon: 'clock', text: 'La dernière complète date de plus de 7 jours : les différentielles grossissent et la restauration est plus longue. Gardez au moins une complète par semaine.' })
   if (s.log_minutes > 0 && !(s.diff_hours > 0)) A.push({ tone: 'info', icon: 'activity', text: 'Ajoutez des <b>différentielles</b> (toutes les 6 heures par exemple) : moins de journaux à rejouer, restauration plus rapide.' })
   if (oldestPending && s.log_minutes > 0 && Date.now() - new Date(oldestPending) > (s.log_minutes * 3 + 5) * 6e4) A.push({ tone: 'warn', icon: 'alert', text: 'Des transactions attendent depuis longtemps d\'être sauvegardées dans le journal : vérifiez que la sauvegarde automatique est activée.' })
+  if (!kitInfo()) A.push({ tone: 'danger', icon: 'key', text: 'Les données médicales sont <b>chiffrées</b> avec la clé de cette installation : sans elle, vos sauvegardes et la copie Supabase sont <b>illisibles sur un autre ordinateur</b>. Téléchargez le <b>kit de récupération</b> et gardez-le hors de cet ordinateur (clé USB, coffre).' })
+  if (s.frequency === '1h' && s.log_minutes > 0) A.push({ tone: 'info', icon: 'layers', text: 'Complète <b>toutes les heures</b> alors que le journal des transactions tourne toutes les ' + s.log_minutes + ' min : une complète <b>par jour</b> suffit (même sécurité, beaucoup moins d\'espace).' })
   if (!A.length) A.push({ tone: 'ok', icon: 'check', text: 'Stratégie complète : complète + différentielles + journal + miroir. Perte maximale en cas de panne : <b>' + rpo + ' minutes</b>.' })
-  return { epoch: ch.epoch, full: cur ? { id: cur.id, seq: cur.seq, created_at: cur.created_at } : null, last_log: lastLog || null, last_diff: lastDiff || null, logs: items.filter(i => i.type === 'journal').length, diffs: items.filter(i => i.type === 'differentielle').length, pending, rpo, free, mirror, last_check: lastCheck, advice: A, maintenance: maintenance.on,
+  return { kit: kitInfo(), epoch: ch.epoch, full: cur ? { id: cur.id, seq: cur.seq, created_at: cur.created_at } : null, last_log: lastLog || null, last_diff: lastDiff || null, logs: items.filter(i => i.type === 'journal').length, diffs: items.filter(i => i.type === 'differentielle').length, pending, rpo, free, mirror, last_check: lastCheck, advice: A, maintenance: maintenance.on,
     items: ch.items.slice(-300).reverse() } }
 
 // ── automatisation : journal toutes les N minutes, différentielle toutes les N heures ──

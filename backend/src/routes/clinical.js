@@ -10,7 +10,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const p = /^[0-9a-f-]{36}$/.test(id) ? (await q('select * from patients where id=$1 and clinic_id=$2', [id, req.user.clinic_id])).rows[0] : null
     if (!p) return null
     return req.perms.has('view_all_patients') || (req.perms.has('view_assigned_patients') && await isAssigned(q, p.id, req.user.id)) ? p : null }
-  app.get('/api/doctors', need('view_medical_records', 'view_all_patients'), wrap(async (req, res) => res.json((await q(
+  app.get('/api/doctors', need('view_medical_records', 'view_all_patients', 'view_finances', 'manage_appointments', 'manage_queue', 'manage_payroll'), wrap(async (req, res) => res.json((await q(
     "select id,first_name||' '||last_name name from users where clinic_id=$1 and status='active' and role in ('DENTIST','OWNER','ADMIN_MEDICAL') order by last_name", [req.user.clinic_id])).rows)))
   app.get('/api/patients/:id/record', need('view_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Dossier introuvable ou accès refusé')

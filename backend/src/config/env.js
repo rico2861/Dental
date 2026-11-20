@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')   // …/backend
 dotenv.config({ path: path.join(ROOT, '.env') })
 
+// clé collée avec des espaces, des guillemets ou « JWT_SECRET= » devant : corrigée automatiquement
+if (process.env.JWT_SECRET) { let k = process.env.JWT_SECRET.trim(); for (let i = 0; i < 2; i++) k = k.replace(/^['"]|['"]$/g, '').trim().replace(/^JWT_SECRET\s*=\s*/, '').trim(); process.env.JWT_SECRET = k }
 // hébergement (Railway, Render, Fly…) : les données vont sur le disque permanent (volume) s'il existe
 export const HOSTED = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RENDER || process.env.FLY_APP_NAME)
 export const VOLUME = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_ROOT || ''

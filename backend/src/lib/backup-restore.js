@@ -11,7 +11,7 @@ export const LOG = () => path.join(BDIR(), 'journal.json')
 export const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex')
 export const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return d } }
 // journal des opérations (sauvegardes, vérifications, restaurations) — conservé à côté des sauvegardes
-export const journal = entry => { try { fs.mkdirSync(BDIR(), { recursive: true }); const l = readJson(LOG(), []); l.unshift({ at: new Date().toISOString(), ...entry }); fs.writeFileSync(LOG(), JSON.stringify(l.slice(0, 500), null, 1)) } catch {} }
+export const journal = entry => { try { fs.mkdirSync(BDIR(), { recursive: true }); const l = readJson(LOG(), []); l.unshift({ at: new Date().toISOString(), ...entry }); fs.writeFileSync(LOG(), JSON.stringify(l.slice(0, 3000), null, 1)) } catch {} }
 
 export async function applyPendingRestore(dbDir) {
   const m = readJson(MARKER(), null); if (!m) return null

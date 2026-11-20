@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), envp = path.join(root, '.env')
 const secret = () => crypto.randomBytes(48).toString('hex')
+// clé collée avec des espaces, des guillemets ou « JWT_SECRET= » devant : corrigée automatiquement
+if (process.env.JWT_SECRET) { let k = process.env.JWT_SECRET.trim(); for (let i = 0; i < 2; i++) k = k.replace(/^['"]|['"]$/g, '').trim().replace(/^JWT_SECRET\s*=\s*/, '').trim(); process.env.JWT_SECRET = k }
 // hébergé (Railway…) : la configuration vient des variables du service, jamais d'un .env éphémère
 const hosted = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RENDER || process.env.FLY_APP_NAME)
 if (hosted) {

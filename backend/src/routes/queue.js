@@ -19,7 +19,9 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const cid = req.user.clinic_id, day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : today()
     const cl = (await q('select queue_capacity from clinics where id=$1', [cid])).rows[0], cap = capOf(cl?.queue_capacity, day)
     const tickets = (await q(SEL + ' where t.clinic_id=$1 and t.day=$2 order by t.number', [cid, day])).rows
-    const waiting = tickets.filter(t => t.status === 'waiting' || t.status === 'called').sort((a, b) => (a.status === 'called' ? -1 : 0) - (b.status === 'called' ? -1 : 0) || b.priority - a.priority || a.number - b.number)
+    const due = t => t.appt_at && new Date(t.appt_at).getTime() <= Date.now() + 15 * 6e4   // rendez-vous à l'heure : ne fait pas la queue
+    const waiting = tickets.filter(t => t.status === 'waiting' || t.status === 'called').sort((a, b) => (a.status === 'called' ? -1 : 0) - (b.status === 'called' ? -1 : 0) || b.priority - a.priority || due(b) - due(a) || a.number - b.number)
+    for (const t of waiting) t.appt_due = !!due(t)
     waiting.forEach((t, i) => { t.position = i + 1 })
     const done = tickets.filter(t => t.status === 'done' && t.started_at && t.finished_at), consult = done.length ? Math.round(done.reduce((s, t) => s + (new Date(t.finished_at) - new Date(t.started_at)), 0) / done.length / 6e4) : null
     const started = tickets.filter(t => t.started_at), wait = started.length ? Math.round(started.reduce((s, t) => s + (new Date(t.started_at) - new Date(t.arrived_at)), 0) / started.length / 6e4) : null
@@ -75,10 +77,32 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   // appeler le suivant : urgences d'abord, puis l'ordre d'arrivée (éventuellement pour un médecin précis)
   app.post('/api/queue/next', Q, wrap(async (req, res) => {
     const doc = UUID.test(req.body.doctor_id || '') ? req.body.doctor_id : null
-    const t = (await q(`select id from queue_tickets where clinic_id=$1 and day=$2 and status='waiting' ${doc ? 'and (doctor_id=$3 or doctor_id is null)' : ''} order by priority desc, number limit 1`, doc ? [req.user.clinic_id, today(), doc] : [req.user.clinic_id, today()])).rows[0]
+    const t = (await q(`select t.id from queue_tickets t left join appointments a on a.id=t.appointment_id where t.clinic_id=$1 and t.day=$2 and t.status='waiting' ${doc ? 'and (t.doctor_id=$3 or t.doctor_id is null)' : ''} order by t.priority desc, (a.starts_at is not null and a.starts_at <= now() + interval '15 minutes') desc, t.number limit 1`, doc ? [req.user.clinic_id, today(), doc] : [req.user.clinic_id, today()])).rows[0]
     if (!t) return fail(res, 404, 'Personne n\'attend pour le moment')
     const out = await step(req, t.id, 'call'); if (out.err) return fail(res, ...out.err)
     const full = (await q(SEL + ' where t.id=$1', [t.id])).rows[0]; await audit(req, 'QUEUE_CALL', 'queue_tickets', t.id, { number: full.number }); res.json(full) }))
+  // le médecin prend un patient en attente : il passe « en consultation » (avec ce médecin) ; son rendez-vous suit
+  app.post('/api/queue/:id/take', Q, wrap(async (req, res) => { if (!UUID.test(req.params.id)) return fail(res, 404, 'Ticket introuvable')
+    const out = await tx(async c => {
+      const t = (await c.query('select * from queue_tickets where id=$1 and clinic_id=$2 for update', [req.params.id, req.user.clinic_id])).rows[0]; if (!t) return E(404, 'Ticket introuvable')
+      if (!['waiting', 'called'].includes(t.status)) return E(409, t.status === 'in_consult' ? 'Ce patient est déjà en consultation' : 'Ce patient n\'est plus en attente')
+      const doc = req.user.role === 'DENTIST' ? req.user.id : UUID.test(req.body.doctor_id || '') ? req.body.doctor_id : t.doctor_id
+      await c.query("update queue_tickets set status='in_consult', called_at=coalesce(called_at,now()), started_at=now(), doctor_id=$2, updated_by=$3 where id=$1", [t.id, doc, req.user.id])
+      if (t.appointment_id) await c.query('update appointments set arrived_at=coalesce(arrived_at,now()), seated_at=coalesce(seated_at,now()) where id=$1', [t.appointment_id])
+      return { id: t.id, number: t.number, patient_id: t.patient_id } })
+    if (out.err) return fail(res, ...out.err)
+    await audit(req, 'QUEUE_START', 'queue_tickets', out.id, { number: out.number }); res.json(out) }))
+  // personne non inscrite : son ticket est rattaché au dossier qui vient d'être créé
+  app.post('/api/queue/:id/link', Q, wrap(async (req, res) => { if (!UUID.test(req.params.id) || !UUID.test(req.body.patient_id || '')) return fail(res, 400, 'Données invalides')
+    const out = await tx(async c => {
+      const t = (await c.query('select * from queue_tickets where id=$1 and clinic_id=$2 for update', [req.params.id, req.user.clinic_id])).rows[0]; if (!t) return E(404, 'Ticket introuvable')
+      if (t.patient_id && t.patient_id !== req.body.patient_id) return E(409, 'Ce ticket est déjà rattaché à un autre dossier')
+      if (!(await c.query('select 1 from patients where id=$1 and clinic_id=$2', [req.body.patient_id, req.user.clinic_id])).rowCount) return E(404, 'Patient introuvable')
+      const dup = (await c.query("select number from queue_tickets where clinic_id=$1 and day=$2 and patient_id=$3 and id<>$4 and status in ('waiting','called','in_consult')", [req.user.clinic_id, t.day, req.body.patient_id, t.id])).rows[0]
+      if (dup) return E(409, 'Ce patient a déjà le ticket n° ' + dup.number)
+      await c.query('update queue_tickets set patient_id=$2, updated_by=$3 where id=$1', [t.id, req.body.patient_id, req.user.id]); return { id: t.id, number: t.number } })
+    if (out.err) return fail(res, ...out.err)
+    await audit(req, 'QUEUE_LINKED', 'queue_tickets', out.id, { number: out.number, patient_id: req.body.patient_id }); res.json(out) }))
   // capacité par jour (lundi → vendredi)
   app.post('/api/queue/capacity', Q, wrap(async (req, res) => {
     const cap = {}; for (const w of [1, 2, 3, 4, 5]) { const v = parseInt(req.body[w] ?? req.body['d' + w]); if (!(v >= 0 && v <= 500)) return fail(res, 400, 'Capacité invalide (0 à 500 ; 0 = pas de limite)'); cap[w] = v }

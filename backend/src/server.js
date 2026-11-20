@@ -25,9 +25,21 @@ const audit = (req, action, table, id, details) =>
 const app = express()
 app.set('trust proxy', 1)
 // réseau local en HTTP : pas de redirection forcée vers HTTPS (sinon les autres postes n'affichent qu'une page blanche)
-app.use(helmet({ contentSecurityPolicy: { directives: { upgradeInsecureRequests: null } }, hsts: false, crossOriginOpenerPolicy: false, originAgentCluster: false })); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
+// en ligne (HTTPS) : navigateur obligé de rester en HTTPS ; en local : HTTP autorisé pour les autres postes du réseau
+app.use(helmet({ contentSecurityPolicy: { directives: { upgradeInsecureRequests: config.hosted ? [] : null } }, hsts: config.hosted ? { maxAge: 15552000, includeSubDomains: true } : false, crossOriginOpenerPolicy: false, originAgentCluster: false })); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
 // données privées : aucune réponse de l'API ne doit être gardée par un cache (CDN de l'hébergeur, proxy, navigateur)
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store, private'); res.setHeader('CDN-Cache-Control', 'no-store'); next() })
+// cache court des calculs lourds (tableaux de bord, statistiques, dettes, résumé du journal) :
+// réutilisé tant qu'aucune donnée n'a changé (toute écriture le vide) et au plus 60 s ; propre à chaque session (droits respectés)
+let dataVersion = 0; const RCACHE = new Map(), HEAVY = /^\/api\/(dashboard\/owner|finance\/stats|finance\/summary|audit\/summary|debts|me\/dashboard|me\/activity|intel(\/reception)?|queue)$/
+app.use((req, res, next) => {
+  if (req.method !== 'GET') { if (req.path.startsWith('/api/')) res.on('finish', () => { if (res.statusCode < 400) dataVersion++ }); return next() }
+  if (!HEAVY.test(req.path) || !req.cookies?.dl) return next()
+  const key = req.cookies.dl + ' ' + req.originalUrl, hit = RCACHE.get(key), ttl = req.path === '/api/queue' ? 5000 : 60000
+  if (hit && hit.v === dataVersion && Date.now() - hit.at < ttl) { res.setHeader('X-Cache', 'hit'); return res.status(200).type('application/json').send(hit.body) }
+  const v = dataVersion, json = res.json.bind(res)
+  res.json = body => { if (res.statusCode === 200 && v === dataVersion) { RCACHE.set(key, { v, at: Date.now(), body: JSON.stringify(body) }); if (RCACHE.size > 400) RCACHE.delete(RCACHE.keys().next().value) } return json(body) }
+  next() })
 // mode mono-utilisateur pendant une restauration : toute autre requête est refusée proprement
 app.use((req, res, next) => maintenance.on && req.path.startsWith('/api/') && req.path !== '/api/health' ? res.status(503).json({ error: (maintenance.why || 'Restauration en cours') + ' : réessayez dans un instant', code: 'MAINTENANCE' }) : next())
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next)
@@ -214,18 +226,6 @@ app.post('/api/patients', need('create_patients'), wrap(async (req, res) => {
   for (const [k, n] of [['blood_group', 5], ['blood_pressure', 20], ['medications', 500], ['other', 500], ['motif', 500]]) { const v = clean(b[k], n); if (v) med[k] = v }
   if (Object.keys(med).length) await q('insert into medical_histories(patient_id,clinic_id,data,updated_by) values($1,$2,$3,$4)', [p.id, req.user.clinic_id, sealJson(med), req.user.id])
   await audit(req, 'PATIENT_CREATED', 'patients', p.id); res.json(p) }))
-app.get('/api/dashboard', need(), wrap(async (req, res) => {
-  const c = req.user.clinic_id, out = {}
-  if (req.perms.has('view_all_patients')) {
-    const { rows: [r] } = await q(`select count(*) filter (where status='active') active, count(*) filter (where registered_at>=date_trunc('month',current_date)) new_month from patients where clinic_id=$1`, [c])
-    Object.assign(out, { patients_active: +r.active, patients_new_month: +r.new_month }) }
-  if (req.perms.has('view_finances') || req.perms.has('manage_exchange_rates'))
-    out.rate = (await q('select rate::text from exchange_rates where clinic_id=$1 and effective_at<=now() order by effective_at desc, created_at desc limit 1', [c])).rows[0]?.rate ?? null
-  if (req.perms.has('manage_appointments')) { const { rows: [a] } = await q("select count(*) filter (where starts_at::date=current_date and status in ('planned','confirmed')) today, count(*) filter (where starts_at>now() and status in ('planned','confirmed')) upcoming from appointments where clinic_id=$1", [c])
-    const { rows: [r] } = await q("select count(*) n from follow_up_reminders where clinic_id=$1 and status='pending' and due_date<=current_date", [c]); Object.assign(out, { appointments_today: +a.today, appointments_upcoming: +a.upcoming, patients_to_recall: +r.n }) }
-  if (req.perms.has('manage_treatment_plans')) out.plans_in_progress = +(await q("select count(*) n from treatment_plans where clinic_id=$1 and status in ('approved','in_progress')", [c])).rows[0].n
-  if (req.perms.has('manage_prostheses')) out.prostheses_in_progress = +(await q("select count(*) n from prostheses where clinic_id=$1 and step<>'placed'", [c])).rows[0].n
-  res.json(out) }))
 app.get('/api/audit/summary', need('view_audit_logs'), wrap(async (req, res) => { const c = req.user.clinic_id, one = async (sql, p = [c]) => (await q(sql, p)).rows[0]
   const SENS = "'USER_CREATED','USER_UPDATED','USER_STATUS','PASSWORD_RESET','PERMISSION_CHANGED','SESSIONS_REVOKED','SECURITY_SETTINGS','INVOICE_CANCELLED','INVOICE_CORRECTED','PAYMENT_VOIDED','PATIENT_ARCHIVED','RESTORE_REQUESTED','BACKUP_DOWNLOADED','CLOUD_CONFIGURED','CLOUD_IMPORTED','REATTRIBUTED','EMPLOYEE_PAY','COMMISSION_RATE','RATE_SET','DOCUMENT_ARCHIVED','MFA_EMAIL_ENABLED','MFA_EMAIL_DISABLED','ACCESS_CODE_ISSUED','MAIL_SETTINGS','DOCTOR_SCHEDULE'"
   const k = await one(`select count(*) filter (where created_at >= current_date)::int today, count(*) filter (where created_at >= now()-interval '7 days')::int week, count(distinct user_id) filter (where created_at >= current_date)::int users_today, count(*) filter (where action in (${SENS}) and created_at >= now()-interval '7 days')::int sensitive from audit_logs where clinic_id=$1`)
@@ -248,16 +248,23 @@ app.get('/api/audit', need('view_audit_logs'), wrap(async (req, res) => res.json
 const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
 app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
 // adresses du réseau local : les autres ordinateurs, tablettes et téléphones connectés au même Wi-Fi / réseau ouvrent l'une d'elles
-const lanUrls = () => Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal && !/^169.254./.test(i.address)).map(i => `http://${i.address}:${config.port}`)
+// adresses utiles seulement : cartes virtuelles (VirtualBox, VMware, Hyper-V, WSL, Docker, Bluetooth) écartées, Wi-Fi en premier
+const lanUrls = () => { const VIRT = /virtual|vbox|vmware|vethernet|hyper-v|wsl|docker|bluetooth|loopback|tailscale|zerotier/i
+  return Object.entries(os.networkInterfaces()).flatMap(([name, l]) => (l || []).map(i => ({ ...i, name }))).filter(i => i.family === 'IPv4' && !i.internal && !/^169.254./.test(i.address) && !/^192.168.56./.test(i.address) && !VIRT.test(i.name))
+    .sort((x, y) => /wi-?fi|wireless|wlan/i.test(y.name) - /wi-?fi|wireless|wlan/i.test(x.name)).map(i => 'http://' + i.address + ':' + config.port) }
 app.get('/api/network', need(), (req, res) => res.json({ port: config.port, hosted: config.hosted, urls: config.hosted ? (process.env.RAILWAY_PUBLIC_DOMAIN ? ['https://' + process.env.RAILWAY_PUBLIC_DOMAIN] : []) : lanUrls(), firewall: `New-NetFirewallRule -DisplayName "DENTAL LIGHT" -Direction Inbound -Protocol TCP -LocalPort ${config.port} -Action Allow -Profile Private,Domain` }))
+// matrice des rôles (qui voit quoi) : pour l'écran Utilisateurs
+app.get('/api/roles', need('manage_users'), (req, res) => res.json({ roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, k === 'OWNER' ? ALL : v])) }))
 app.use('/api', (req, res) => fail(res, 404, 'Route inconnue'))
 app.use(express.static(config.frontendDir, { etag: true, setHeaders: (res, f) => { if (/.(js|css|html)$/.test(f)) res.setHeader('Cache-Control', 'no-cache') } }))   // l'interface est toujours revérifiée : jamais d'ancienne version affichée
 app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail(res, 413, 'Fichier trop volumineux (10 Mo maximum)') : fail(res, 500, 'Erreur serveur') })
 { const c = await pool.connect()   // base embarquée : migrations + propriétaire appliqués automatiquement au démarrage
-  try { await migrate(c, () => {}); if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {}) } finally { c.release() } }
+  try { await migrate(c, () => {}); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {})
+    // après la création de la clinique (premier démarrage) : sinon le réglage ne s'appliquerait qu'au démarrage suivant
+    if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']) } finally { c.release() } }
 try { const r = await protectExisting(q, config.storageDir); if (r.rows || r.files) console.log(`Données médicales chiffrées : ${r.rows} enregistrement(s), ${r.files} document(s)`) } catch (e) { console.error('Chiffrement des données :', e.message) }
 try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
-const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { console.log('DENTAL LIGHT prêt sur le port', config.port); if (config.hosted) { const d = process.env.RAILWAY_PUBLIC_DOMAIN; console.log(d ? 'Adresse publique : https://' + d : 'Aucune adresse publique : Railway → service → Settings → Networking → Generate Domain (port ' + config.port + ')'); console.log(config.volume ? 'Données sur le volume : ' + config.volume : 'ATTENTION : aucun volume, les données seront effacées au prochain redéploiement'); return }
+const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { server.keepAliveTimeout = 65000; server.headersTimeout = 66000; console.log('DENTAL LIGHT prêt sur le port', config.port); if (config.hosted) { const d = process.env.RAILWAY_PUBLIC_DOMAIN; console.log(d ? 'Adresse publique : https://' + d : 'Aucune adresse publique : Railway → service → Settings → Networking → Generate Domain (port ' + config.port + ')'); console.log(config.volume ? 'Données sur le volume : ' + config.volume : 'ATTENTION : aucun volume, les données seront effacées au prochain redéploiement'); return }
   const u = lanUrls(); if (u.length) { console.log('Sur les autres appareils du même réseau, ouvrez :'); u.forEach(x => console.log('   ' + x)); console.log("(Si la page ne s'ouvre pas : autorisez le port " + config.port + " dans le pare-feu Windows, voir Utilisateurs → Accès réseau)") } })
 if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase

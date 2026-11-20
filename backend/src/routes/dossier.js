@@ -1,6 +1,6 @@
 import { isAssigned } from '../core/permissions.js'
 // Dossier patient : résumé complet, modification, désactivation / réactivation (jamais de suppression), PDF adaptés.
-import { makePdf, patientPdf, consultationPdf } from '../lib/dossier-pdf.js'
+import { makePdf, patientPdf, consultationPdf, diagnosticPdf } from '../lib/dossier-pdf.js'
 import { advice } from '../lib/clinical-advice.js'
 import { openJson, openExam } from '../lib/protect.js'
 const UUID = /^[0-9a-f-]{36}$/, FIELDS = ['last_name', 'first_name', 'phone', 'phone2', 'address', 'department', 'zone', 'profession', 'emergency_contact', 'emergency_phone', 'marital_status', 'email', 'id_number', 'birth_place', 'insurance', 'insurance_number', 'referred_by', 'notes']
@@ -37,6 +37,16 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     if (!isAdmin(req.user)) return fail(res, 403, 'Réservé aux administrateurs'); const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé')
     await q("update patients set status='active', deleted_at=null, deleted_by=null, delete_reason=null where id=$1", [p.id]); await audit(req, 'PATIENT_RESTORED', 'patients', p.id); res.json({ ok: true }) }))
   const clinic = async req => (await q('select name,address,phone from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}
+  // fiche diagnostique (même présentation que la fiche papier) : remplie pour un patient, ou vierge à imprimer
+  app.get('/api/fiche-diagnostique-vierge', need('view_medical_records', 'create_patients'), wrap(async (req, res) => {
+    const cl = await clinic(req); makePdf(res, 'fiche-diagnostique-vierge', doc => diagnosticPdf(doc, { clinic: cl }), { footer: (cl.name || 'DENTAL LIGHT') + '  ·  Fiche diagnostique' }) }))
+  app.get('/api/patients/:id/diagnostic', need('view_medical_records'), wrap(async (req, res) => {
+    const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Dossier introuvable ou accès refusé')
+    const [cl, h, ex, th, doctor] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id]), q('select * from dental_examinations where patient_id=$1 order by examined_at desc limit 1', [p.id]),
+      q('select distinct on (tooth_fdi) tooth_fdi,state from tooth_states where patient_id=$1 order by tooth_fdi, recorded_at desc', [p.id]), name(p.primary_doctor_id)])
+    await audit(req, 'PATIENT_PDF', 'patients', p.id, { kind: 'fiche diagnostique' })
+    makePdf(res, 'fiche-diagnostique-' + p.file_number, doc => diagnosticPdf(doc, { clinic: cl, p, h: openJson(h.rows[0]?.data) ?? {}, exam: openExam(ex.rows[0]), teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), doctor }),
+      { footer: (cl.name || 'DENTAL LIGHT') + '  ·  Fiche diagnostique  ·  Dossier ' + p.file_number + '  ·  Document médical confidentiel' }) }))
   app.get('/api/patients/:id/pdf', need('view_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Dossier introuvable ou accès refusé')
     const [cl, h, ex, th, co, ap, fin, doctor] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id]),

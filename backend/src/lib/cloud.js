@@ -88,7 +88,7 @@ async function syncTable(r, t, cache) {
   for (const row of rows) { const k = key(row), h = sha(JSON.stringify(row, (_, v) => typeof v === 'bigint' ? v.toString() : v)); next[k] = h; if (prev[k] !== h) changed.push(row) }
   const removed = Object.keys(prev).filter(k => !(k in next))
   const cols = t.cols.map(c => c.col), casts = t.cols.map(c => c.typ)
-  for (let i = 0; i < changed.length; i += 200) { const chunk = changed.slice(i, i + 200), params = [], tuples = chunk.map(row => '(' + cols.map((c, j) => { params.push(val(row[c])); return `$${params.length}::${casts[j]}` }).join(',') + ')')
+  for (let i = 0; i < changed.length; i += 200) { const chunk = changed.slice(i, i + 200), params = [], tuples = chunk.map(row => '(' + cols.map((c, j) => { params.push(/^jsonb?$/.test(casts[j]) ? (row[c] == null ? null : JSON.stringify(row[c])) : val(row[c])); return `$${params.length}::${casts[j]}` }).join(',') + ')')
     const upd = cols.filter(c => !t.pk.includes(c)).map(c => `${qi(c)}=excluded.${qi(c)}`).join(', ')
     await r.query(`insert into ${SCHEMA}.${qi(t.name)} (${cols.map(qi).join(',')}) values ${tuples.join(',')}${t.pk.length ? ` on conflict (${t.pk.map(qi).join(',')}) do ${upd ? 'update set ' + upd : 'nothing'}` : ''}`, params) }
   if (t.pk.length && removed.length) for (let i = 0; i < removed.length; i += 200) { const ks = removed.slice(i, i + 200).map(k => k.split('\u0001')), params = []
@@ -114,8 +114,8 @@ async function uploadBackup(r, b) { const blob = pack(path.join(BDIR(), b.id)), 
   const chk = (await r.query(`select count(*)::int n from ${SCHEMA}.dl_backups where id=$1`, [b.id])).rows[0].n; if (chk !== parts) throw new Error('Vérification de la copie en ligne échouée')
   const mf = path.join(BDIR(), b.id, 'manifest.json'), man = readJson(mf, {}); man.cloud = { at: new Date().toISOString(), parts, size: blob.length, sha256: meta.sha256, target: 'supabase' }; fs.writeFileSync(mf, JSON.stringify(man, null, 1))
   journal({ op: 'cloud_upload', id: b.id, ok: true, size: blob.length, parts }) }
-export async function listCloud() { if (webFirst()) return listCloudWeb(); let r; try { r = await connect() } catch (e) { if (httpsConfigured()) { notePgFail(); return listCloudWeb() } throw e } try { return (await r.query(`select meta, uploaded_at from ${SCHEMA}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => ({ ...(typeof x.meta === 'string' ? JSON.parse(x.meta) : x.meta), uploaded_at: x.uploaded_at })) } catch (e) { if (/does not exist/.test(e.message)) return []; throw e } finally { await r.end() } }
-export async function importCloud(id) {
+export async function listCloud() { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 }); if (webFirst()) return listCloudWeb(); let r; try { r = await connect() } catch (e) { if (httpsConfigured()) { notePgFail(); return listCloudWeb() } throw e } try { return (await r.query(`select meta, uploaded_at from ${SCHEMA}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => ({ ...(typeof x.meta === 'string' ? JSON.parse(x.meta) : x.meta), uploaded_at: x.uploaded_at })) } catch (e) { if (/does not exist/.test(e.message)) return []; throw e } finally { await r.end() } }
+export async function importCloud(id) { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 });
   if (!/^[\w.:-]+$/.test(id)) throw new Error('Copie invalide'); if (listBackups().some(b => b.id === id)) throw new Error('Cette sauvegarde existe déjà sur cet ordinateur')
   let meta, blob, r = null; if (!webFirst()) { try { r = await connect() } catch (e) { if (!httpsConfigured()) throw e; notePgFail() } }
   if (r) { let rows; try { rows = (await r.query(`select part, data, meta from ${SCHEMA}.dl_backups where id=$1 order by part`, [id])).rows } finally { await r.end() }
@@ -133,7 +133,10 @@ const BUCKET = 'dental-light', CACHE_W = () => path.join(BDIR(), 'cloud-sync-web
 const httpEnv = () => { const e = env(); let ref = ''; try { const u = new URL(e.url); ref = (u.hostname.match(/^db\.([a-z0-9]+)\.supabase\.co$/) || [])[1] || (decodeURIComponent(u.username).match(/^postgres\.([a-z0-9]+)$/) || [])[1] || '' } catch {}
   return { base: (process.env.SUPABASE_URL || (ref ? 'https://' + ref + '.supabase.co' : '')).replace(/\/+$/, ''), key: (process.env.SUPABASE_SERVICE_KEY || '').trim() } }
 export const httpsConfigured = () => { const h = httpEnv(); return !!(h.base && h.key) }
+// coupure passagère (ECONNRESET, délai, socket fermée) : jusqu'à 3 essais, avec une courte pause
 async function rest(method, p, body, headers = {}) {
+  for (let i = 0; ; i++) { try { return await rest1(method, p, body, headers) } catch (e) { if (!e.offline || i >= 2) throw e; await new Promise(r => setTimeout(r, 800 * (i + 1))) } } }
+async function rest1(method, p, body, headers = {}) {
   const h = httpEnv(), raw = Buffer.isBuffer(body), auth = h.key.startsWith('eyJ') ? { Authorization: 'Bearer ' + h.key } : {}
   let res; try { res = await fetch(h.base + p, { method, headers: { apikey: h.key, ...auth, ...(body !== undefined && !raw ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body === undefined ? undefined : raw ? body : JSON.stringify(body), signal: AbortSignal.timeout(120000) }) }
   catch (e) { throw Object.assign(new Error('Supabase (HTTPS) injoignable : ' + (e.cause?.code || e.name === 'TimeoutError' && 'délai dépassé' || e.message)), { offline: true }) }
@@ -204,11 +207,12 @@ async function doSyncWeb(e, wasOnline, pgErr) {
     return { sent, rows, files, tables: tables.length, via }
   } catch (err) { setState({ last_error: err.message, ...(err.offline ? { online: false } : {}) }); journal({ op: 'cloud_sync', ok: false, error: err.message, via: 'https' }); return { error: err.message } } }
 // voie retenue : web si elle a fonctionné en dernier (PostgreSQL n'est réessayé que toutes les 30 min)
+const notePgTryReset = () => { const c = readJson(CACHE(), {}); c.pg_try = 0; if (c.via?.mode === 'https') delete c.via; writeJson(CACHE(), c) }
 const webFirst = () => { if (!httpsConfigured()) return false; const c = readJson(CACHE(), {}); return c.via?.mode === 'https' && Date.now() - (c.pg_try || 0) < 30 * 6e4 }
 const notePgFail = () => { const c = readJson(CACHE(), {}); c.pg_try = Date.now(); writeJson(CACHE(), c) }
 async function freshBackup(e, wasOnline) {
   const newest = listBackups().filter(b => b.verified)[0]
-  if (!newest || Date.now() - new Date(newest.created_at) > e.fresh_hours * 36e5 || (wasOnline === false && Date.now() - new Date(newest.created_at) > 30 * 6e4)) { try { await createBackup({ kind: 'auto', by: 'avant envoi en ligne' }) } catch (x) { journal({ op: 'backup', ok: false, error: x.message }) } } }
+  if (!newest || Date.now() - new Date(newest.created_at) > Math.max(24, e.fresh_hours) * 36e5) { try { await createBackup({ kind: 'auto', by: 'avant envoi en ligne' }) } catch (x) { journal({ op: 'backup', ok: false, error: x.message }) } } }
 
 // ── synchronisation complète ──
 export async function checkOnline() { if (!configured()) return { online: false, reason: 'not_configured' }
@@ -220,7 +224,8 @@ export function syncNow(opts = {}) { if (pulling) return Promise.resolve({ skipp
 async function doSync() {
   const e = env(); if (!e.url || !e.enabled) return { skipped: 'non configuré (SUPABASE_DB_URL absent de .env) ou désactivé (SUPABASE_SYNC=off)' }
   let r = null; const wasOnline = cloudState().online
-  if (webFirst()) return doSyncWeb(e, wasOnline, null)
+  if (webFirst()) { const w = await doSyncWeb(e, wasOnline, null); if (!w.offline && !w.error?.includes('injoignable')) return w
+    notePgTryReset() }   // la voie web ne répond pas : retour immédiat à PostgreSQL ci-dessous
   try { r = await connect() } catch (err) { if (httpsConfigured()) { notePgFail(); return doSyncWeb(e, wasOnline, err) } setState({ online: false, last_check: new Date().toISOString(), last_error: err.message, hint: err.details || null }); return { offline: true, error: err.message } }
   try {
     setState({ online: true, last_check: new Date().toISOString(), via: r.via, last_error: null, hint: null })
@@ -250,7 +255,7 @@ async function remoteCounts(r) {
   for (const t of await localTables()) if (ex.has(t.name)) out[t.name] = Number((await r.query('select count(*)::int n from ' + SCHEMA + '.' + qi(t.name))).rows[0].n)
   return out }
 // comparaison local / en ligne, table par table (rien n'est modifié)
-export async function previewCloud() {
+export async function previewCloud() { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 });
   const r = await openRemote(); try {
     const remote = await remoteCounts(r), tables = await localTables(), last = r ? (await r.query('select last_sync from ' + SCHEMA + '.dl_sync limit 1').catch(() => ({ rows: [] }))).rows[0]?.last_sync : ((await rest('GET', '/rest/v1/dl_sync?select=last_sync&limit=1')) || [])[0]?.last_sync
     const rows = []; for (const t of tables) { if (NO_RESTORE.has(t.name)) continue; rows.push({ table: t.name, local: Number((await q('select count(*)::int n from ' + qi(t.name))).rows[0].n), cloud: remote[t.name] || 0 }) }
@@ -258,7 +263,7 @@ export async function previewCloud() {
   } finally { if (r) await r.end().catch(() => {}) } }
 const fromJv = v => v && typeof v === 'object' && !Array.isArray(v) && typeof v.$base64 === 'string' && Object.keys(v).length === 1 ? '\\x' + Buffer.from(v.$base64, 'base64').toString('hex') : v
 const localDay = v => { if (typeof v !== 'string' || !v.includes('T')) return v; const d = new Date(v); return isNaN(d) ? v : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') }
-export async function pullCloud({ by } = {}) {
+export async function pullCloud({ by } = {}) { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 });
   if (pulling) throw new Error('Une récupération est déjà en cours'); pulling = true
   try {
     if (running) await running.catch(() => {})

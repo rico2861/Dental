@@ -232,8 +232,9 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       await c.query("select cash_post($1,'HTG','out',$2,$3,$4,'payroll',$5,$6)", [req.user.clinic_id, a, 'SAL-' + pp.id.slice(0, 8), 'Salaire ' + r.period, pp.id, req.user.id])
       await c.query("update payroll_records set paid=$2, status=case when $2>=net then 'paid' else 'partial' end where id=$1", [r.id, paid / 100]); return {} })
     if (out.err) return fail(res, ...out.err); await audit(req, 'SALARY_PAID', 'payroll_records', req.params.id, { amount: a }); res.json({ ok: true }) }))
-  app.get('/api/payroll/:id/payslip', need('view_salaries'), wrap(async (req, res) => {
+  app.get('/api/payroll/:id/payslip', need(), wrap(async (req, res) => {   // la direction / comptabilité : toutes les fiches ; chaque employé : uniquement les siennes
     const r = (await q('select * from payroll_records where id=$1 and clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0]; if (!r) return fail(res, 404, 'Introuvable')
+    if (!req.perms.has('view_salaries') && !(await q('select 1 from employees where id=$1 and user_id=$2', [r.employee_id, req.user.id])).rowCount) return fail(res, 403, 'Fiche de paie d\'un autre employé')
     const emp = (await q('select * from employees where id=$1', [r.employee_id])).rows[0], pays = (await q('select * from payroll_payments where payroll_id=$1 order by paid_at', [r.id])).rows
     const cl = await clinic(req.user.clinic_id)
     pipe(res, `paie-${emp.last_name}-${r.period}`, d => payslipPdf(d, { clinic: cl, emp, r: Object.fromEntries(Object.entries(r).map(([k, v]) => [k, ['base', 'commissions', 'bonuses', 'deductions', 'other_deductions', 'advances', 'net', 'paid'].includes(k) ? Number(v) : v])), pays })) }))
