@@ -15,7 +15,12 @@
     "dev": "node --watch src/server.js",
     "test": "node tests/run.mjs",
     "demo": "node scripts/demo.js",
-    "recuperation": "node scripts/recuperation.js"
+    "recuperation": "node scripts/recuperation.js",
+    "service:installer": "node scripts/service.js installer",
+    "service:desinstaller": "node scripts/service.js desinstaller",
+    "service:etat": "node scripts/service.js etat",
+    "service:demarrer": "node scripts/service.js demarrer",
+    "service:arreter": "node scripts/service.js arreter"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.0",

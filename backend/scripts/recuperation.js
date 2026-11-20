@@ -46,7 +46,7 @@ else if (cmd === 'debloquer') { const u = await need()
 else if (cmd === 'reinitialiser') { const u = await need(), pw = tmpPw()
   if (u.status === 'blocked') await run('Déblocage du compte', () => q("update users set status='active' where id=$1", [u.id]))
   const r = await recoverAccount(q, u, { how: 'console du serveur (mot de passe temporaire)', ip: null, password: pw, temporary: true, actor: ACTOR })
-  console.log(`\n✔ Mot de passe réinitialisé pour ${u.email}\n\n     Mot de passe temporaire :  ${pw}\n\n  Il n'est affiché qu'ici : notez-le, il devra être changé à la première connexion.\n  Toutes les sessions de ce compte sont fermées.${r.needMfa ? '\n  La double authentification sera exigée à la connexion.' : ''}\n`) }
+  console.log(`\n✔ Mot de passe réinitialisé pour ${u.email}\n\n     Mot de passe temporaire :  ${pw}\n\n  Il n'est affiché qu'ici : notez-le, il devra être changé à la première connexion.\n  Toutes les sessions de ce compte sont fermées.\n`) }
 else if (cmd === 'codes') { const u = await need(), codes = newRecoveryCodes()
   await run('Nouveaux codes de récupération', async () => { await q('delete from recovery_codes where user_id=$1', [u.id]); for (const c of codes) await q('insert into recovery_codes(user_id,code_hash) values($1,$2)', [u.id, sha(c)]) })
   await log(u, 'RECOVERY_CODES_GENERATED', { nombre: codes.length })
@@ -57,17 +57,16 @@ else if (cmd === 'secours-creer') {
   if ((await q('select 1 from users where lower(email)=$1', [email])).rowCount) { console.error('\n✖ Cette adresse est déjà utilisée par un autre compte.\n'); process.exit(1) }
   const cl = (await q('select id from clinics order by created_at limit 1')).rows[0], [fn = 'Secours', ...ln] = rest
   const hash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12)
-  await run('Création du compte de secours', () => q("insert into users(clinic_id,email,password_hash,first_name,last_name,role,status,must_change_password,is_emergency,must_setup_2fa,job_title) values($1,$2,$3,$4,$5,'OWNER','disabled',true,true,true,'Compte de secours')",
+  await run('Création du compte de secours', () => q("insert into users(clinic_id,email,password_hash,first_name,last_name,role,status,must_change_password,is_emergency,must_setup_2fa,job_title) values($1,$2,$3,$4,$5,'OWNER','disabled',true,true,false,'Compte de secours')",
     [cl.id, email, hash, fn, ln.join(' ') || 'Direction']))
   const u = await find(email); await log(u, 'EMERGENCY_ACCOUNT_CREATED', {})
-  console.log(`\n✔ Compte propriétaire de secours créé : ${email} (DÉSACTIVÉ)\n  Il ne peut servir qu'après « npm run recuperation -- secours-activer », pour 24 heures au plus,\n  avec un mot de passe temporaire et la double authentification obligatoire.\n`) }
+  console.log(`\n✔ Compte propriétaire de secours créé : ${email} (DÉSACTIVÉ)\n  Il ne peut servir qu'après « npm run recuperation -- secours-activer », pour 24 heures au plus,\n  avec un mot de passe temporaire.\n`) }
 else if (cmd === 'secours-activer') { const u = (await q('select * from users where is_emergency')).rows[0]; if (!u) { console.error('\n✖ Aucun compte de secours : npm run recuperation -- secours-creer <e-mail>\n'); process.exit(1) }
   const pw = tmpPw()
   await run('Activation du compte de secours', () => q("update users set status='active', emergency_until=now()+interval '24 hours' where id=$1", [u.id]))
   await recoverAccount(q, { ...u, status: 'active' }, { how: 'activation du compte de secours en console', ip: null, password: pw, temporary: true, actor: ACTOR })
-  await run('Activation du compte de secours', () => q('update users set must_setup_2fa=true where id=$1', [u.id]))
-  await log(u, 'EMERGENCY_ACCOUNT_ACTIVATED', { duree: '24 h' }); await notify(q, u.clinic_id, 'account_recovered', 'Compte de secours ACTIVÉ', `Le compte de secours ${u.email} a été activé depuis la console du serveur pour 24 heures.`, 'manage_users')
-  console.log(`\n✔ Compte de secours ACTIVÉ pour 24 heures : ${u.email}\n\n     Mot de passe temporaire :  ${pw}\n\n  À changer à la première connexion ; la double authentification sera exigée.\n  Après usage : npm run recuperation -- secours-desactiver\n`) }
+    await log(u, 'EMERGENCY_ACCOUNT_ACTIVATED', { duree: '24 h' }); await notify(q, u.clinic_id, 'account_recovered', 'Compte de secours ACTIVÉ', `Le compte de secours ${u.email} a été activé depuis la console du serveur pour 24 heures.`, 'manage_users')
+  console.log(`\n✔ Compte de secours ACTIVÉ pour 24 heures : ${u.email}\n\n     Mot de passe temporaire :  ${pw}\n\n  À changer à la première connexion.\n  Après usage : npm run recuperation -- secours-desactiver\n`) }
 else if (cmd === 'secours-desactiver') { const u = (await q('select * from users where is_emergency')).rows[0]; if (!u) { console.error('\n✖ Aucun compte de secours.\n'); process.exit(1) }
   await run('Désactivation du compte de secours', async () => { await q("update users set status='disabled', emergency_until=null, token_version=token_version+1 where id=$1", [u.id]); await q('update user_sessions set revoked_at=now() where user_id=$1 and revoked_at is null', [u.id]) })
   await log(u, 'EMERGENCY_ACCOUNT_DISABLED', {}); console.log(`\n✔ Compte de secours désactivé et sessions fermées : ${u.email}\n`) }

@@ -365,7 +365,7 @@ document.addEventListener('click', e => { const t = e.target.closest('.eye'); if
 document.addEventListener('click', e => { if (e.target.closest('[data-lgforgot]')) { e.preventDefault(); forgotView() } })
 // ── Récupération du compte : lien par e-mail (méthode 1) ou code de récupération hors ligne (méthode 2) ──
 const pwFields = `<label>Nouveau mot de passe<span class="lgin pw">${ic('key', 17)}<input name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="12 caractères minimum"></span></label>
-  <label>Confirmer<span class="lgin pw">${ic('key', 17)}<input name="password2" type="password" required minlength="12" autocomplete="new-password"></span></label><p class="lghint">Majuscule, minuscule, chiffre et caractère spécial. Après la récupération, toutes les sessions ouvertes sont fermées et la double authentification reste obligatoire.</p>`
+  <label>Confirmer<span class="lgin pw">${ic('key', 17)}<input name="password2" type="password" required minlength="12" autocomplete="new-password"></span></label><p class="lghint">Majuscule, minuscule, chiffre et caractère spécial. Après la récupération, toutes les sessions ouvertes sont fermées.</p>`
 const authMsg = (m, ok) => { const a = $('#authErr'); if (!a) return; a.classList.toggle('info', !!ok); a.innerHTML = m; a.hidden = false }
 const backLink = `<button type="button" class="alink" data-a="cancelotp" onclick="location.hash='#connexion';location.reload()">${ic('left', 16)} Retour à la connexion</button>`
 function forgotView(tab = 'mail') {

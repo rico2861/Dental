@@ -1,12 +1,18 @@
 // Base de données EMBARQUÉE : PGlite = PostgreSQL complet exécuté dans Node.js.
 // Aucun serveur ni logiciel à installer. Les données sont dans backend/data/db (DB_DIR pour changer).
 import fs from 'fs'
+import net from 'net'
 import { PGlite } from '@electric-sql/pglite'
 import { AsyncLocalStorage } from 'async_hooks'
 import { config } from '../config/env.js'
 import { applyPendingRestore } from '../lib/backup-restore.js'
 
 const dir = config.dbDir
+// Une base embarquée ne supporte qu'UN programme à la fois : si le port du serveur est déjà pris (DENTAL LIGHT tourne
+// déjà, souvent dans une autre fenêtre), on s'arrête AVANT d'ouvrir la base, pour ne jamais l'abîmer.
+if (!dir.startsWith('memory://') && process.env.DL_SKIP_PORT_CHECK !== '1') {
+  const busy = await new Promise(res => { const t = net.createServer(); t.once('error', e => res(e.code === 'EADDRINUSE')); t.once('listening', () => t.close(() => res(false))); t.listen(config.port, process.env.HOST || '0.0.0.0') })
+  if (busy) { console.error(`\n✖ Le port ${config.port} est déjà utilisé : DENTAL LIGHT tourne probablement déjà (ouvrez http://localhost:${config.port}).\n  La base n'a pas été ouverte (une seule instance à la fois, pour ne pas l'abîmer).\n  Pour relancer ici : fermez l'autre fenêtre du serveur (ou Ctrl+C dedans), puis refaites : npm start\n`); process.exit(1) } }
 if (!dir.startsWith('memory://')) fs.mkdirSync(dir, { recursive: true })
 // restauration demandée depuis l'application : appliquée ici, au démarrage, avant d'ouvrir la base
 const restored = dir.startsWith('memory://') ? null : await applyPendingRestore(dir)

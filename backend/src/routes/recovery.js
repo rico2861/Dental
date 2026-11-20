@@ -21,7 +21,7 @@ export const newRecoveryCodes = () => Array.from({ length: 10 }, () => { const h
 
 // récupération effective : nouveau mot de passe, sessions révoquées, verrou levé, journal, alerte à la direction
 export async function recoverAccount(q, u, { how, ip, password, temporary = false, actor }) {
-  const needMfa = adminish(u) && !u.totp_enabled && !u.mfa_email
+  const needMfa = false   // double authentification : conservée si elle existe, jamais imposée (choix de la clinique : réglages de sécurité)
   await actorCtx.run({ id: (actor ? actor.id ?? null : u.id), n: actor?.n ?? `${name(u)} (récupération)`, ip, r: 'Récupération du compte : ' + how }, async () => {
     await q(`update users set password_hash=$2, must_change_password=$3, token_version=token_version+1, failed_attempts=0, locked_until=null,
       must_setup_2fa = must_setup_2fa or $4 where id=$1`, [u.id, await bcrypt.hash(password, 12), temporary, needMfa])

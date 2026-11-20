@@ -31,8 +31,11 @@ export async function protectExisting(q, storageDir) {
   for (const t of ['medical_histories', 'patient_hygiene']) {
     for (const r of (await q(`select patient_id, data from ${t} where not (data ? '$enc')`)).rows) { await q(`update ${t} set data=$2 where patient_id=$1`, [r.patient_id, JSON.stringify(sealJson(r.data))]); rows++ } }
   const cond = EXAM_FIELDS.map(k => `(${k} is not null and ${k} <> '' and ${k} not like 'enc:v1:%')`).join(' or ')
-  for (const r of (await q(`select id, ${EXAM_FIELDS.join(',')} from dental_examinations where ${cond}`)).rows) {
-    await q(`update dental_examinations set ${EXAM_FIELDS.map((k, i) => `${k}=$${i + 2}`).join(',')} where id=$1`, [r.id, ...EXAM_FIELDS.map(k => sealText(r[k]))]); rows++ }
+  const ex = (await q(`select id, ${EXAM_FIELDS.join(',')} from dental_examinations where ${cond}`)).rows
+  if (ex.length) { const { pool } = await import('../db/pool.js'), c = await pool.connect()   // examens immuables : seul le chiffrement du contenu existant est autorisé
+    try { await c.query('begin'); await c.query('set local session_replication_role = replica')
+      for (const r of ex) { await c.query(`update dental_examinations set ${EXAM_FIELDS.map((k, i) => `${k}=$${i + 2}`).join(',')} where id=$1`, [r.id, ...EXAM_FIELDS.map(k => sealText(r[k]))]); rows++ }
+      await c.query('commit') } catch (e) { await c.query('rollback'); throw e } finally { c.release() } }
   const walk = d => fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]) : []
   for (const f of walk(storageDir)) { const b = fs.readFileSync(f); if (b.subarray(0, MAGIC.length).equals(MAGIC)) continue
     const tmp = f + '.chiffrement'; fs.writeFileSync(tmp, sealFile(b), { mode: 0o600 }); if (!openFile(fs.readFileSync(tmp)).equals(b)) { fs.rmSync(tmp, { force: true }); continue } fs.renameSync(tmp, f); files++ }

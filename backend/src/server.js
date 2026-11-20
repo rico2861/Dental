@@ -12,6 +12,8 @@ import planning from './routes/planning.js'; import intel from './routes/intel.j
 import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
 import { sealJson, protectExisting } from './lib/protect.js'
 import recovery from './routes/recovery.js'
+// lancé par le service (scripts/service-run.js) : s'arrête si le lanceur disparaît (arrêt du service sous Windows)
+if (process.env.DL_SUPERVISOR_PID) setInterval(() => { try { process.kill(Number(process.env.DL_SUPERVISOR_PID), 0) } catch { process.exit(0) } }, 5000).unref()
 const SECRET = config.secret
 if (!SECRET || SECRET.length < 32) throw new Error('JWT_SECRET (32+ caractères) requis')
 const prod = config.prod
@@ -63,7 +65,7 @@ const auth = wrap(async (req, res, next) => {
 })
 const need = (...ps) => [auth, (req, res, next) => {
   if (req.user.must_change_password) return fail(res, 403, 'Changement de mot de passe obligatoire', 'PASSWORD_CHANGE_REQUIRED')
-  if ((adminish(req.user) && req.user.req2fa || req.user.must_setup_2fa) && !req.user.totp_enabled && !req.user.mfa_email) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
+  if (adminish(req.user) && req.user.req2fa && !req.user.totp_enabled && !req.user.mfa_email) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
   if (ps.length && !ps.some(p => req.perms.has(p))) return fail(res, 403, 'Permission refusée')
   guard(req, res, next).catch(next) }]
 // ── Protections des modifications sensibles ──
@@ -155,7 +157,7 @@ app.post('/api/login/resend', loginLimiter, wrap(async (req, res) => { let d; tr
 app.post('/api/logout', wrap(async (req, res) => { try { const d = jwt.verify(req.cookies.dl || '', SECRET); if (d.sid) await q('update user_sessions set revoked_at=now() where id=$1', [d.sid]) } catch {} res.clearCookie('dl'); res.json({ ok: true }) }))
 app.get('/api/me', auth, (req, res) => { const u = req.user
   res.json({ id: u.id, username: u.username, first_name: u.first_name, last_name: u.last_name, role: u.role, must_change_password: u.must_change_password, totp_enabled: u.totp_enabled, idle_minutes: u.idle,
-    mfa_email: !!u.mfa_email, needs_2fa_setup: !u.must_change_password && (adminish(u) && u.req2fa || u.must_setup_2fa) && !u.totp_enabled && !u.mfa_email, perms: [...req.perms] }) })
+    mfa_email: !!u.mfa_email, needs_2fa_setup: !u.must_change_password && adminish(u) && u.req2fa && !u.totp_enabled && !u.mfa_email, perms: [...req.perms] }) })
 // Profil personnel : chacun peut consulter son compte et modifier son numéro de téléphone.
 app.get('/api/profile', auth, (req, res) => { const u = req.user
   res.json({ username: u.username, first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone || '', role: u.role, job_title: u.job_title, created_at: u.created_at, last_login_at: u.last_login_at, totp_enabled: u.totp_enabled, admin: adminish(u) }) })
@@ -341,6 +343,8 @@ try { const r = await protectExisting(q, config.storageDir); if (r.rows || r.fil
 try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
 const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { server.keepAliveTimeout = 65000; server.headersTimeout = 66000; console.log('DENTAL LIGHT prêt sur le port', config.port); if (config.hosted) { const d = process.env.RAILWAY_PUBLIC_DOMAIN; console.log(d ? 'Adresse publique : https://' + d : 'Aucune adresse publique : Railway → service → Settings → Networking → Generate Domain (port ' + config.port + ')'); console.log(config.volume ? 'Données sur le volume : ' + config.volume : 'ATTENTION : aucun volume, les données seront effacées au prochain redéploiement'); return }
   const u = lanUrls(); if (u.length) { console.log('Sur les autres appareils du même réseau, ouvrez :'); u.forEach(x => console.log('   ' + x)); console.log("(Si la page ne s'ouvre pas : autorisez le port " + config.port + " dans le pare-feu Windows, voir Utilisateurs → Accès réseau)") } })
+// port déjà occupé : message clair (souvent DENTAL LIGHT tourne déjà dans une autre fenêtre)
+server.on('error', e => { if (e.code === 'EADDRINUSE') { console.error(`\n✖ Le port ${config.port} est déjà utilisé.\n  DENTAL LIGHT tourne probablement déjà dans une autre fenêtre : ouvrez http://localhost:${config.port}\n  Pour le relancer ici, fermez d'abord l'autre fenêtre (ou Ctrl+C dedans), puis refaites : npm start\n`); process.exit(1) } throw e })
 if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)
