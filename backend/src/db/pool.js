@@ -2,6 +2,7 @@
 // Aucun serveur ni logiciel à installer. Les données sont dans backend/data/db (DB_DIR pour changer).
 import fs from 'fs'
 import { PGlite } from '@electric-sql/pglite'
+import { AsyncLocalStorage } from 'async_hooks'
 import { config } from '../config/env.js'
 import { applyPendingRestore } from '../lib/backup-restore.js'
 
@@ -43,13 +44,19 @@ async function run(text, params) {
   return { rows, rowCount: r.affectedRows > 0 ? r.affectedRows : rows.length, fields: r.fields }
 }
 
+// Auteur de la requête en cours (utilisateur, poste, motif) : transmis à la base avant chaque requête ou transaction,
+// pour que l'historique des modifications (migration 027) sache QUI a modifié et POURQUOI. Hors requête : « Système ».
+export const actorCtx = new AsyncLocalStorage()
+let lastTag = null
+const tagActor = async () => { const a = actorCtx.getStore(), t = a ? JSON.stringify({ id: a.id, n: a.n, ip: a.ip, r: a.r || '' }) : JSON.stringify({ n: 'Système' })
+  if (t !== lastTag) { await db.query("select set_config('dl.actor', $1, false)", [t]); lastTag = t } }
 // Une seule connexion : les requêtes (et chaque transaction) passent l'une après l'autre.
 let tail = Promise.resolve()
 const acquire = () => { let release; const prev = tail; tail = new Promise(r => { release = r }); return prev.then(() => release) }
 
 export const pool = {
-  async query(text, params) { const release = await acquire(); try { return await run(text, params) } finally { release() } },
-  async connect() { const release = await acquire(); let open = true; return { query: run, release() { if (open) { open = false; release() } } } },
+  async query(text, params) { const release = await acquire(); try { await tagActor(); return await run(text, params) } finally { release() } },
+  async connect() { const release = await acquire(); try { await tagActor() } catch {} let open = true; return { query: run, release() { if (open) { open = false; release() } } } },
   async end() { const release = await acquire(); try { await db.close() } finally { release() } }
 }
 export const q = (text, params) => pool.query(text, params)

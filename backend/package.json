@@ -13,7 +13,9 @@
     "restaurer": "node scripts/restore-latest.js",
     "start": "node scripts/init-env.js && node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "demo": "node scripts/demo.js",
+    "recuperation": "node scripts/recuperation.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.0",

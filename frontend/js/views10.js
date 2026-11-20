@@ -14,7 +14,24 @@ export default function install({ $, esc, api, can, toast, render, me }) {
   const today = () => new Date().toLocaleDateString('en-CA', { timeZone: TZ })
   const ROLE = { OWNER: 'Direction', ADMIN: 'Administration', ADMIN_MEDICAL: 'Direction médicale', ADMIN_FINANCIER: 'Direction financière', ACCOUNTANT: 'Comptabilité', DENTIST: 'Médecin dentiste', DENTAL_ASSISTANT: 'Assistant(e) dentaire', SECRETARY: 'Accueil · secrétariat', STOCK_MANAGER: 'Gestion du stock', DENTAL_TECH: 'Prothésiste', STAFF: 'Personnel' }
   const profile = r => ['OWNER', 'ADMIN'].includes(r) ? 'direction' : ['ADMIN_FINANCIER', 'ACCOUNTANT'].includes(r) ? 'finance' : r === 'ADMIN_MEDICAL' ? 'medical' : r === 'DENTIST' ? 'doctor' : ['SECRETARY', 'DENTAL_ASSISTANT'].includes(r) ? 'reception' : r === 'STOCK_MANAGER' ? 'stock' : 'other'
-  let per = 'month', chartRange = 12, liveTimer = null
+  let per = 'month', chartRange = 12, liveTimer = null, packT = null
+  const pack = () => document.querySelectorAll('.zdcols[data-pack]').forEach(g => {
+    const w = g.clientWidth, k = w >= 900 ? 3 : w >= 560 ? 2 : 1, cards = [...g.querySelectorAll(':scope > .zdcard, :scope > .zdcol > .zdcard')]
+    cards.forEach((c, i) => { if (c.dataset.o == null) c.dataset.o = i }); cards.sort((a, b) => (+a.dataset.o || 0) - (+b.dataset.o || 0))
+    if (+g.dataset.k === k && +g.dataset.n === cards.length) return
+    const cols = Array.from({ length: k }, () => Object.assign(document.createElement('div'), { className: 'zdcol' })), h = Array(k).fill(0)
+    g.style.gridTemplateColumns = `repeat(${k}, minmax(0, 1fr))`; g.replaceChildren(...cols)
+    for (const c of cards) { const i = h.indexOf(Math.min(...h)); cols[i].append(c); h[i] += c.offsetHeight + 16 }
+    g.dataset.k = k; g.dataset.n = cards.length })
+  addEventListener('resize', () => { clearTimeout(packT); packT = setTimeout(() => { document.querySelectorAll('.zdcols[data-pack]').forEach(g => delete g.dataset.k); pack() }, 150) })
+  // mise en page : pleine largeur, ligne « grand graphique + carte », puis groupes de cartes répartis en colonnes
+  const layout = blocks => { const out = []; let grp = []
+    const flush = () => { if (grp.length) out.push(`<div class="zdcols" data-pack>${grp.join('')}</div>`); grp = [] }
+    for (let i = 0; i < blocks.length; i++) { const b = blocks[i], wide = /^<section class="zdcard [^"]*zspan3/.test(b), half = /^<section class="zdcard [^"]*zspan2/.test(b)
+      if (wide) { flush(); out.push(b) }
+      else if (half) { flush(); const nx = blocks[i + 1]; if (nx && !/^<section class="zdcard [^"]*zspan[23]/.test(nx)) { out.push(`<div class="zdrow2">${b}${nx}</div>`); i++ } else out.push(b) }
+      else grp.push(b) }
+    flush(); return out.join('') }
   const hidden = () => privacy.on   // montants masqués : pas de valeurs sur les axes ni dans les infobulles
 
   // ── petits graphiques SVG (responsive, infobulles au survol) ──
@@ -161,7 +178,7 @@ export default function install({ $, esc, api, can, toast, render, me }) {
         st && dom('briefcase', 'violet', 'Personnel & paie', [['Employés', st.employees], ['Masse salariale', H(st.payroll)], ['Reste à verser', H(st.pending), num(st.pending) ? 'warnc' : '']], '#personnel-paie'),
         sk && dom('package', 'orange', 'Stock', [['Valeur', H(sk.value)], ['Ruptures / faibles', `${sk.out} / ${sk.low}`, sk.out ? 'neg' : ''], ['Expirés', sk.expired, sk.expired ? 'neg' : '']], '#stock'),
         f && dom('wallet', 'green', 'Trésorerie', (f.cash || []).slice(0, 3).map(c => [c.name, money(num(c.balance), c.currency)]), '#caisse-depenses')].filter(Boolean)
-      if (doms.length) blocks.push(sec('Vue d\'ensemble', 'grid', `<div class="zddomg">${doms.join('')}</div>`, { cls: 'zspan3' }))
+      if (doms.length) blocks.splice(F ? 2 : 0, 0, sec('Vue d\'ensemble', 'grid', `<div class="zddomg">${doms.join('')}</div>`, { cls: 'zspan3' }))
       if (A) blocks.push(sec('Activité récente', 'list', feed(A), { action: `<a class="bs" href="#journal">Journal${ic('right', 13)}</a>` }))
       if (B) { const last = B.backups?.[0], cl = B.cloud?.state; blocks.push(sec('État du système', 'shield', `<div class="zdsys">
           <div class="${last && Date.now() - new Date(last.created_at) < 26 * 36e5 ? 'ok' : 'ko'}">${ic('download', 15)}<span>Dernière sauvegarde</span><b>${last ? fdt(last.created_at) : 'aucune'}</b></div>
@@ -169,9 +186,9 @@ export default function install({ $, esc, api, can, toast, render, me }) {
           <div class="${B.strategy?.mirror?.ok ? 'ok' : 'off'}">${ic('package', 15)}<span>Miroir (2e disque)</span><b>${B.strategy?.mirror ? (B.strategy.mirror.ok ? 'actif' : 'inaccessible') : 'non configuré'}</b></div>
           <div class="ok">${ic('clock', 15)}<span>Perte maximale</span><b>${B.strategy?.rpo ? B.strategy.rpo + ' min' : '—'}</b></div></div>`, { action: `<a class="bs" href="#sauvegardes">Sauvegardes${ic('right', 13)}</a>` })) } }
 
-    $('#view').innerHTML = `<div class="zdash2 p-${P}">${hero}${K.length ? `<div class="zdkg">${K.map(kpi).join('')}</div>` : ''}<div class="zdgrid2">${recsHtml(recs).replace('class="zdcard ', 'class="zdcard zdrecs ')}${blocks.join('')}</div></div>`
+    $('#view').innerHTML = `<div class="zdash2 p-${P}">${hero}${K.length ? `<div class="zdkg">${K.map(kpi).join('')}</div>` : ''}<div class="zdgrid2">${recsHtml(recs).replace('class="zdcard ', 'class="zdcard zdrecs ')}${layout(blocks)}</div></div>`; pack()
     // actualisation en direct de la salle d'attente (toutes les 30 s, seulement sur cette page)
-    clearInterval(liveTimer); if (Q) liveTimer = setInterval(async () => { if (!location.hash.startsWith('#tableau-de-bord') && location.hash) return clearInterval(liveTimer); const box = $('#dqw'); if (!box) return; try { const q = await api('/queue'); const tmp = document.createElement('div'); tmp.innerHTML = queueWidget(q); box.replaceWith(tmp.firstElementChild) } catch {} }, 30000)
+    clearInterval(liveTimer); if (Q) liveTimer = setInterval(async () => { if (!location.hash.startsWith('#tableau-de-bord') && location.hash) return clearInterval(liveTimer); const box = $('#dqw'); if (!box) return; try { const q = await api('/queue'); const tmp = document.createElement('div'); tmp.innerHTML = queueWidget(q); tmp.firstElementChild.dataset.o = box.dataset.o ?? ''; box.replaceWith(tmp.firstElementChild) } catch {} }, 30000)
   }
 
   // ── Ma paie : ce que la clinique me doit, mes fiches de paie, mes commissions ──

@@ -15,3 +15,6 @@ backend/data*/
 backend/backups*/
 *.avant-restauration-*
 *kit-recuperation*.txt
+
+# clinique de démonstration (données fictives, base séparée)
+backend/demo-data/

@@ -110,6 +110,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       if (!PLAN_NEXT[p.status].includes(req.body.status)) return E(409, `Transition ${p.status} → ${req.body.status} non autorisée`); await c.query('update treatment_plans set status=$2 where id=$1', [p.id, req.body.status]); return {} })
     if (!out.err) await audit(req, 'PLAN_STATUS', 'treatment_plans', req.params.id, { status: req.body.status }); done(res, out, () => ({ ok: true })) }))
   app.post('/api/plans/:id/items/:item/status', need('manage_treatment_plans'), wrap(async (req, res) => {
+    if (!UUID.test(req.params.id) || !UUID.test(req.params.item)) return fail(res, 404, 'Intervention introuvable')
     const s = req.body.status, b = req.body; if (!['todo', 'in_progress', 'postponed', 'done', 'cancelled'].includes(s)) return fail(res, 400, 'Statut invalide')
     if (s === 'postponed' && !clean(b.reason, 200)) return fail(res, 400, 'Motif du report obligatoire')
     const doc = actingDoctor(req, b.doctor_id), nt = b.teeth == null ? null : teethOf(b.teeth); if (nt && !nt.every(FDI)) return fail(res, 400, 'Numéros de dents invalides')
@@ -134,6 +135,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
 
   // ── Séance réalisée : avancement « n / prévues », enregistrée dans l'historique du patient ──
   app.post('/api/plans/:id/items/:item/session', need('manage_treatment_plans'), wrap(async (req, res) => {
+    if (!UUID.test(req.params.id) || !UUID.test(req.params.item)) return fail(res, 404, 'Intervention introuvable')
     const b = req.body, doc = actingDoctor(req, b.doctor_id), nt = b.teeth == null ? null : teethOf(b.teeth); if (nt && !nt.every(FDI)) return fail(res, 400, 'Numéros de dents invalides')
     const out = await tx(async c => {
       const p = (await c.query('select id,status,patient_id,primary_doctor_id from treatment_plans where id=$1 and clinic_id=$2 for update', [req.params.id, req.user.clinic_id])).rows[0]; if (!p) return E(404, 'Plan introuvable')

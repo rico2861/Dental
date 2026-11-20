@@ -2,7 +2,7 @@ import os from 'os'
 import { config } from './config/env.js'
 import express from 'express'; import helmet from 'helmet'; import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser'; import jwt from 'jsonwebtoken'; import bcrypt from 'bcryptjs'; import crypto from 'crypto'
-import { pool, q } from './db/pool.js'
+import { pool, q, actorCtx } from './db/pool.js'
 import { payPlan } from './lib/billing-core.js'
 import { migrate, ensureOwner } from './db/migrate.js'
 import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
@@ -11,6 +11,7 @@ import billing from './routes/billing.js'; import clinical from './routes/clinic
 import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import { ensureLogTriggers, startPlus, maintenance } from './lib/backup-plus.js'; import reports from './routes/reports.js'; import queue from './routes/queue.js'; import documents from './routes/documents.js'
 import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
 import { sealJson, protectExisting } from './lib/protect.js'
+import recovery from './routes/recovery.js'
 const SECRET = config.secret
 if (!SECRET || SECRET.length < 32) throw new Error('JWT_SECRET (32+ caractères) requis')
 const prod = config.prod
@@ -19,7 +20,7 @@ const prod = config.prod
 const { permsOf, canDelegate } = makePermissions(q)
 const audit = (req, action, table, id, details) =>
   q('insert into audit_logs(clinic_id,user_id,action,table_name,record_id,details,ip) values($1,$2,$3,$4,$5,$6,$7)',
-    [req.user?.clinic_id, req.user?.id, action, table, id, details ?? null, req.ip])
+    [req.user?.clinic_id, req.user?.id, action, table, id, req.motif ? { ...(details && typeof details === 'object' ? details : {}), motif: req.motif } : details ?? null, req.ip])
 
 // ── App ──
 const app = express()
@@ -52,17 +53,59 @@ const auth = wrap(async (req, res, next) => {
   if (d.p || !d.sid) return fail(res, 401, 'Non connecté')
   const u = (await q('select u.*,c.inactivity_logout_minutes idle,c.require_2fa req2fa from users u join clinics c on c.id=u.clinic_id where u.id=$1', [d.id])).rows[0]
   if (!u || u.status !== 'active' || u.token_version !== d.tv) return fail(res, 401, 'Session révoquée')
+  if (u.is_emergency && !(u.emergency_until > new Date())) return fail(res, 401, 'Compte de secours expiré : réactivation en console uniquement')
   const s = (await q("select id,(now()-last_seen > ($2::int*interval '1 minute')) idle_out from user_sessions where id=$1 and user_id=$3 and revoked_at is null", [d.sid, u.idle, u.id])).rows[0]
   if (!s) return fail(res, 401, 'Session terminée')
   if (s.idle_out) { await q('update user_sessions set revoked_at=now() where id=$1', [s.id]); return fail(res, 401, 'Session expirée par inactivité', 'IDLE_TIMEOUT') }
   q("update user_sessions set last_seen=now() where id=$1 and last_seen<now()-interval '20 seconds'", [s.id]).catch(() => {})
-  req.user = u; req.sid = s.id; req.perms = await permsOf(u); next()
+  req.user = u; req.sid = s.id; req.perms = await permsOf(u); req.actor = { id: u.id, n: `${u.first_name} ${u.last_name}`.trim(), ip: req.ip, r: '' }
+  actorCtx.run(req.actor, () => next())
 })
 const need = (...ps) => [auth, (req, res, next) => {
   if (req.user.must_change_password) return fail(res, 403, 'Changement de mot de passe obligatoire', 'PASSWORD_CHANGE_REQUIRED')
-  if (adminish(req.user) && req.user.req2fa && !req.user.totp_enabled && !req.user.mfa_email) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
+  if ((adminish(req.user) && req.user.req2fa || req.user.must_setup_2fa) && !req.user.totp_enabled && !req.user.mfa_email) return fail(res, 403, "Activez l'authentification à deux facteurs", 'TWOFA_SETUP_REQUIRED')
   if (ps.length && !ps.some(p => req.perms.has(p))) return fail(res, 403, 'Permission refusée')
-  next() }]
+  guard(req, res, next).catch(next) }]
+// ── Protections des modifications sensibles ──
+// motif : texte obligatoire (5 caractères min.), conservé dans l'historique et le journal ;
+// mot de passe : reconfirmé pour les actions critiques (valable 10 min sur la session, 5 essais puis blocage 15 min).
+const hasRow = (sql) => async req => (await q(sql, [req.params.id])).rowCount > 0
+const GUARD = {
+  '/api/patients/:id/update': { motif: true },
+  '/api/patients/:id/primary-doctor': { motif: true },
+  '/api/patients/:id/history': { motif: hasRow("select 1 from medical_histories where patient_id=$1 and data is not null and data::text not in ('{}','null')") },
+  '/api/patients/:id/exams': { motif: hasRow('select 1 from dental_examinations where patient_id=$1') },
+  '/api/patients/:id/hygiene': { motif: hasRow('select 1 from patient_hygiene where patient_id=$1') },
+  '/api/tariffs/:id': { motif: true },
+  '/api/users': { reauth: true },
+  '/api/recovery-codes': { reauth: true },
+  '/api/users/:id/status': { reauth: true, motif: true },
+  '/api/users/:id/profile': { reauth: true },
+  '/api/users/:id/permissions': { reauth: true, motif: true },
+  '/api/users/:id/reset-password': { reauth: true },
+  '/api/users/:id/reset-2fa': { reauth: true, motif: true },
+  '/api/doctors/:id/commission': { reauth: true, motif: true },
+  '/api/employees': { reauth: true },
+  '/api/payroll/:id/adjust': { reauth: true, motif: true },
+  '/api/payments/:id/void': { reauth: true },
+  '/api/invoices/:id/cancel': { reauth: true },
+  '/api/invoices/:id/correct': { reauth: true },
+  '/api/rates': { reauth: true },
+  '/api/settings/security': { reauth: true },
+  '/api/settings/mail': { reauth: true } }
+const REAUTH = new Map(), REAUTH_FAIL = new Map()
+const header = (req, k) => { try { return decodeURIComponent(String(req.headers[k] || '')) } catch { return '' } }
+async function guard(req, res, next) {
+  const g = req.method !== 'GET' && GUARD[req.route?.path]; if (!g) return next()
+  if (g.reauth && !(REAUTH.get(req.sid) > Date.now())) {
+    const f = REAUTH_FAIL.get(req.sid); if (f && f.n >= 5 && Date.now() - f.at < 15 * 60e3) return fail(res, 429, 'Trop d\'essais : réessayez dans 15 minutes', 'REAUTH_LOCKED')
+    const pw = header(req, 'x-confirm-password'); if (!pw) return fail(res, 428, 'Pour votre sécurité, confirmez votre mot de passe.', 'REAUTH_REQUIRED')
+    if (!(await bcrypt.compare(pw, req.user.password_hash))) { const n = (f && Date.now() - f.at < 15 * 60e3 ? f.n : 0) + 1; REAUTH_FAIL.set(req.sid, { n, at: Date.now() }); await audit(req, 'REAUTH_FAILED', 'users', req.user.id, { route: req.route.path }); return fail(res, 428, `Mot de passe incorrect (${5 - n} essai(s) restant(s))`, 'REAUTH_REQUIRED') }
+    REAUTH_FAIL.delete(req.sid); REAUTH.set(req.sid, Date.now() + 10 * 60e3) }
+  if (g.motif && (g.motif === true || await g.motif(req))) {
+    const m = clean(header(req, 'x-motif'), 300); if (!m || m.length < 5) return fail(res, 428, 'Indiquez le motif de cette modification (il sera conservé dans l\'historique).', 'REASON_REQUIRED')
+    req.motif = m; if (req.actor) req.actor.r = m }
+  next() }
 const newSession = async (req, res, u) => { const { rows: [s] } = await q('insert into user_sessions(user_id,ip,user_agent) values($1,$2,$3) returning id', [u.id, req.ip, (req.headers['user-agent'] || '').slice(0, 200)])
   res.cookie('dl', jwt.sign({ id: u.id, tv: u.token_version, sid: s.id }, SECRET, { expiresIn: '8h' }), { httpOnly: true, sameSite: 'strict', secure: req.secure, maxAge: 8 * 3600e3 }) }
 // Politique de mot de passe : 12 caractères, majuscule, minuscule, chiffre, caractère spécial, pas de répétition,
@@ -85,13 +128,19 @@ const finishLogin = async (req, res, u) => {
   await q('update users set failed_attempts=0, locked_until=null, last_login_at=now() where id=$1', [u.id]); await newSession(req, res, u); req.user = u
   await hist(req, u, u.email, true, 'ok'); await audit(req, 'LOGIN', 'users', u.id); res.json({ ok: true }) }
 app.get('/api/health', wrap(async (req, res) => { await q('select 1'); res.json({ status: 'ok', uptime: Math.round(process.uptime()) }) }))
+// nom d'utilisateur unique : initiales + 6 chiffres (ex. Jean Pierre → JP620012)
+const initialsOf = (fn, ln) => [fn, ln].map(x => String(x || '').normalize('NFD').replace(/[^A-Za-z]/g, '').charAt(0).toUpperCase()).join('') || 'U'
+async function makeUsername(fn, ln) { const ini = initialsOf(fn, ln)
+  for (let i = 0; i < 50; i++) { const u = ini + String(crypto.randomInt(100000, 1000000)); if (!(await q('select 1 from users where upper(username)=$1', [u])).rowCount) return u }
+  throw new Error('Impossible de générer un nom d\'utilisateur unique') }
 const loginLimiter = rateLimit({ windowMs: 15 * 60e3, limit: 40, standardHeaders: true })
 app.post('/api/login', loginLimiter, wrap(async (req, res) => {
-  const email = clean(req.body.email)?.toLowerCase(), pw = req.body.password
-  const u = email && typeof pw === 'string' ? (await q('select * from users where email=$1', [email])).rows[0] : null
+  const email = clean(req.body.email)?.toLowerCase(), pw = req.body.password   // « email » = adresse e-mail ou nom d'utilisateur
+  const u = email && typeof pw === 'string' ? (await q(email.includes('@') ? 'select * from users where email=$1' : 'select * from users where upper(username)=upper($1)', [email])).rows[0] : null
   if (u?.locked_until && u.locked_until > new Date()) { await hist(req, u, email, false, 'locked'); return fail(res, 429, 'Compte temporairement verrouillé') }
-  if (!u || !(await bcrypt.compare(pw || '', u.password_hash))) { console.warn('Connexion refusée :', u ? 'mot de passe incorrect' : 'e-mail inconnu', '→', email); if (u) await failLogin(u); await hist(req, u, email, false, 'bad_password'); return fail(res, 401, 'Identifiants invalides') }
+  if (!u || !(await bcrypt.compare(pw || '', u.password_hash))) { console.warn('Connexion refusée :', u ? 'mot de passe incorrect' : 'identifiant inconnu', '→', email); if (u) await failLogin(u); await hist(req, u, email, false, 'bad_password'); return fail(res, 401, 'Identifiants invalides') }
   if (u.status !== 'active') { await hist(req, u, email, false, 'account_' + u.status); return fail(res, 403, 'Compte bloqué ou désactivé') }
+  if (u.is_emergency && !(u.emergency_until > new Date())) { await hist(req, u, email, false, 'emergency_inactive'); return fail(res, 403, 'Compte de secours non activé (activation en console : npm run recuperation)') }
   if (u.totp_enabled || u.mfa_email) { const mail = u.mfa_email ? await sendEmailCode(q, u) : null, rc = (await q('select count(*)::int n from recovery_codes where user_id=$1 and used_at is null', [u.id]).catch(() => ({ rows: [{ n: 0 }] }))).rows[0].n
     return res.json({ need_otp: true, challenge: jwt.sign({ id: u.id, tv: u.token_version, p: 'otp' }, SECRET, { expiresIn: '10m' }), methods: { app: !!u.totp_enabled, email: !!u.mfa_email, recovery: rc > 0 }, email: mail }) }
   await finishLogin(req, res, u) }))
@@ -105,11 +154,11 @@ app.post('/api/login/resend', loginLimiter, wrap(async (req, res) => { let d; tr
   const u = (await q('select * from users where id=$1', [d.id])).rows[0]; if (!u?.mfa_email || u.token_version !== d.tv) return fail(res, 400, 'Envoi par e-mail non disponible'); const r = await sendEmailCode(q, u); r.sent ? res.json(r) : fail(res, r.wait ? 429 : 503, r.reason) }))
 app.post('/api/logout', wrap(async (req, res) => { try { const d = jwt.verify(req.cookies.dl || '', SECRET); if (d.sid) await q('update user_sessions set revoked_at=now() where id=$1', [d.sid]) } catch {} res.clearCookie('dl'); res.json({ ok: true }) }))
 app.get('/api/me', auth, (req, res) => { const u = req.user
-  res.json({ id: u.id, first_name: u.first_name, last_name: u.last_name, role: u.role, must_change_password: u.must_change_password, totp_enabled: u.totp_enabled, idle_minutes: u.idle,
-    mfa_email: !!u.mfa_email, needs_2fa_setup: !u.must_change_password && adminish(u) && u.req2fa && !u.totp_enabled && !u.mfa_email, perms: [...req.perms] }) })
+  res.json({ id: u.id, username: u.username, first_name: u.first_name, last_name: u.last_name, role: u.role, must_change_password: u.must_change_password, totp_enabled: u.totp_enabled, idle_minutes: u.idle,
+    mfa_email: !!u.mfa_email, needs_2fa_setup: !u.must_change_password && (adminish(u) && u.req2fa || u.must_setup_2fa) && !u.totp_enabled && !u.mfa_email, perms: [...req.perms] }) })
 // Profil personnel : chacun peut consulter son compte et modifier son numéro de téléphone.
 app.get('/api/profile', auth, (req, res) => { const u = req.user
-  res.json({ first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone || '', role: u.role, job_title: u.job_title, created_at: u.created_at, last_login_at: u.last_login_at, totp_enabled: u.totp_enabled, admin: adminish(u) }) })
+  res.json({ username: u.username, first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone || '', role: u.role, job_title: u.job_title, created_at: u.created_at, last_login_at: u.last_login_at, totp_enabled: u.totp_enabled, admin: adminish(u) }) })
 app.post('/api/profile', auth, wrap(async (req, res) => {
   const ph = clean(req.body.phone, 30); if (ph && !/^\+?[\d\s().-]{6,30}$/.test(ph)) return fail(res, 400, 'Numéro de téléphone invalide')
   await q('update users set phone=$2 where id=$1', [req.user.id, ph]); await audit(req, 'PROFILE_UPDATED', 'users', req.user.id); res.json({ ok: true }) }))
@@ -125,7 +174,7 @@ app.post('/api/change-password', auth, wrap(async (req, res) => {
 // ── Utilisateurs ──
 const tmpPw = () => { for (;;) { const p = crypto.randomBytes(10).toString('base64url').replace(/[-_]/g, '') + 'aA7#'; if (!pwProblem(p)) return p } }   // conforme à la politique (12+ caractères, spécial)
 app.get('/api/users', need('manage_users'), wrap(async (req, res) => res.json((await q(
-  'select u.id,u.email,u.first_name,u.last_name,u.role,u.status,u.job_title,u.phone,u.totp_enabled,u.mfa_email,u.last_login_at,u.created_at,(select concat(c.first_name,\' \',c.last_name) from users c where c.id=u.created_by) created_by,e.id employee_id,coalesce(e.base_salary,0)::text base_salary,coalesce(e.commission_pct,0)::text commission_pct from users u left join employees e on e.user_id=u.id where u.clinic_id=$1 order by u.created_at', [req.user.clinic_id])).rows)))
+  'select u.id,u.username,u.email,u.first_name,u.last_name,u.role,u.status,u.job_title,u.phone,u.totp_enabled,u.mfa_email,u.last_login_at,u.created_at,(select concat(c.first_name,\' \',c.last_name) from users c where c.id=u.created_by) created_by,e.id employee_id,coalesce(e.base_salary,0)::text base_salary,coalesce(e.commission_pct,0)::text commission_pct from users u left join employees e on e.user_id=u.id where u.clinic_id=$1 order by u.created_at', [req.user.clinic_id])).rows)))
 app.post('/api/users', need('manage_users'), wrap(async (req, res) => {
   const { role } = req.body, email = clean(req.body.email)?.toLowerCase(), fn = clean(req.body.first_name), ln = clean(req.body.last_name)
   if (!email || !fn || !ln || !ROLES[role]) return fail(res, 400, 'Champs invalides')
@@ -133,12 +182,12 @@ app.post('/api/users', need('manage_users'), wrap(async (req, res) => {
   { const dup = (await q('select first_name,last_name from users where lower(trim(email))=$1', [email.trim()])).rows[0]; if (dup) return fail(res, 409, `Cette adresse e-mail est déjà utilisée par ${dup.first_name} ${dup.last_name}`) }
   if (role === 'OWNER' || (role.startsWith('ADMIN') && req.user.role !== 'OWNER')) return fail(res, 403, 'Rôle réservé au propriétaire')
   const pp = payPlan(req.body); if (pp.err) return fail(res, 400, pp.err)
-  const pw = tmpPw()
+  const pw = tmpPw(), username = await makeUsername(fn, ln)
   try {
-    const { rows: [u] } = await q('insert into users(clinic_id,email,password_hash,first_name,last_name,role,job_title,created_by) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',
-      [req.user.clinic_id, email, await bcrypt.hash(pw, 12), fn, ln, role, clean(req.body.job_title), req.user.id])
+    const { rows: [u] } = await q('insert into users(clinic_id,email,password_hash,first_name,last_name,role,job_title,created_by,username) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id',
+      [req.user.clinic_id, email, await bcrypt.hash(pw, 12), fn, ln, role, clean(req.body.job_title), req.user.id, username])
     await q('insert into employees(clinic_id,user_id,first_name,last_name,job_title,base_salary,commission_pct,hire_date) values($1,$2,$3,$4,$5,$6,$7,current_date)', [req.user.clinic_id, u.id, fn, ln, clean(req.body.job_title) || (role === 'DENTIST' ? 'Médecin dentiste' : null), pp.base, pp.pct])
-    await audit(req, 'USER_CREATED', 'users', u.id, { role, base_salary: pp.base, commission_pct: pp.pct }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`); res.json({ id: u.id, temporary_password: pw })
+    await audit(req, 'USER_CREATED', 'users', u.id, { role, base_salary: pp.base, commission_pct: pp.pct }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`); res.json({ id: u.id, username, temporary_password: pw })
   } catch (e) { if (e.code === '23505') return fail(res, 409, 'Email déjà utilisé'); throw e }
 }))
 const target = wrap(async (req, res, next) => {
@@ -199,7 +248,11 @@ app.get('/api/patients', need('view_all_patients', 'view_assigned_patients'), wr
   const page = Math.max(0, parseInt(req.query.page) || 0), args = [req.user.clinic_id], st = ['archived', 'all'].includes(req.query.status) ? req.query.status : 'active'
   let w = patWhere(clean(req.query.q, 60), args) + (st === 'all' ? '' : ` and status='${st}'`)
   if (!req.perms.has('view_all_patients')) { args.push(req.user.id); w += ' and ' + assignedSql('patients', '$' + args.length) }   // médecin : uniquement ses patients
-  const { rows } = await q(`select id,file_number,last_name,first_name,phone,sex,status,deleted_at,delete_reason,(select u.first_name||' '||u.last_name from users u where u.id=patients.deleted_by) deleted_by_name,date_part('year',age(birth_date))::int age,registered_at,count(*) over() total from patients where ${w} order by last_name,first_name limit 20 offset ${page * 20}`, args)
+  const { rows } = await q(`select id,file_number,last_name,first_name,phone,sex,status,deleted_at,delete_reason,(select u.first_name||' '||u.last_name from users u where u.id=patients.deleted_by) deleted_by_name,date_part('year',age(birth_date))::int age,registered_at,
+    (select u.first_name||' '||u.last_name from users u where u.id=patients.primary_doctor_id) primary_doctor,
+    (select max(c.consulted_at) from consultations c where c.patient_id=patients.id) last_visit,
+    (select min(a.starts_at) from appointments a where a.patient_id=patients.id and a.status in ('planned','confirmed') and a.starts_at>now()) next_appt,
+    count(*) over() total from patients where ${w} order by last_name,first_name limit 20 offset ${page * 20}`, args)
   res.json({ rows, total: Number(rows[0]?.total ?? 0) }) }))
 // Aide à la saisie : retrouve le n° de dossier à partir d'un nom (et inversement) dans les formulaires.
 app.get('/api/patients/lookup', need('view_all_patients', 'view_assigned_patients', 'manage_appointments', 'manage_treatment_plans', 'manage_prostheses', 'manage_finances', 'view_finances', 'manage_inventory', 'create_patients', 'edit_patients', 'manage_queue'), wrap(async (req, res) => {
@@ -239,13 +292,32 @@ app.get('/api/audit/summary', need('view_audit_logs'), wrap(async (req, res) => 
   const views = (await one("select count(*)::int n, count(distinct user_id)::int u from audit_logs where clinic_id=$1 and action in ('RECORD_VIEWED','DOCUMENT_VIEWED','PATIENT_PDF') and created_at >= current_date")).n
   const bk = await one("select max(created_at) last, count(*) filter (where action='BACKUP_FAILED' and created_at >= now()-interval '7 days')::int failed from audit_logs where clinic_id=$1 and action in ('BACKUP_CREATED','BACKUP_FAILED')")
   res.json({ kpi: { ...k, failed_logins: fails.reduce((a, f) => a + f.n, 0), ok_logins: okLogins, record_views_today: views }, fails, after_hours: after, top, cats, sensitive, backup: bk, hours: cl }) }))
+app.get('/api/history', need('view_audit_logs'), wrap(async (req, res) => {
+  const args = [req.user.clinic_id], w = ['(h.clinic_id=$1 or h.clinic_id is null)'], add = (sql, v) => { args.push(v); w.push(sql.replace('?', '$' + args.length)) }
+  if (/^[0-9a-f-]{36}$/.test(req.query.patient || '')) add('h.patient_id=?', req.query.patient)
+  if (/^[a-z_]{2,40}$/.test(req.query.tbl || '')) add('h.tbl=?', req.query.tbl)
+  if (/^[\w-]{1,60}$/.test(req.query.row || '')) add('h.row_id=?', req.query.row)
+  if (/^\d+$/.test(req.query.before || '')) add('h.id<?', req.query.before)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '')) add("h.at>=?::date", req.query.from)
+  if (req.query.op === 'DELETE' || req.query.op === 'UPDATE') add('h.op=?', req.query.op)
+  if (req.query.motif === '1') w.push('h.reason is not null')
+  const rows = (await q(`select h.*, p.last_name||' '||p.first_name patient, p.file_number from data_history h left join patients p on p.id=h.patient_id where ${w.join(' and ')} order by h.id desc limit ${Math.min(100, parseInt(req.query.limit) || 40)}`, args)).rows
+  // champs chiffrés : rendus lisibles uniquement ici, pour les personnes qui ont accès au journal
+  const { openJson: oj, openText: ot, EXAM_FIELDS: EF } = await import('./lib/protect.js')
+  for (const r of rows) { const c = r.changes || {}
+    try { if (c.data && Array.isArray(c.data)) { const [a, b] = c.data.map(v => { try { return oj(v) || {} } catch { return {} } }); delete c.data
+        for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) c['data.' + k] = [a[k] ?? null, b[k] ?? null] }
+      for (const k of EF) if (Array.isArray(c[k])) c[k] = c[k].map(v => { try { return ot(v) } catch { return '(chiffré)' } })
+      if (c._supprime?.data) { try { c._supprime.data = oj(c._supprime.data) } catch {} } } catch {}
+    r.changes = c }
+  res.json(rows) }))
 app.get('/api/audit', need('view_audit_logs'), wrap(async (req, res) => res.json((await q(
   `select a.id,a.action,a.table_name,a.record_id,a.details,host(a.ip) ip,a.created_at,a.user_id,concat(u.first_name,' ',u.last_name) who,u.role from audit_logs a left join users u on u.id=a.user_id where a.clinic_id=$1 and ($2::bigint is null or a.id < $2::bigint)
     and ($4::uuid is null or a.user_id=$4) and ($5::text is null or a.action like any(string_to_array($5, ','))) and ($6::date is null or a.created_at >= $6::date) and ($7::date is null or a.created_at < $7::date + 1)
     and ($8::text is null or a.action ilike '%'||$8||'%' or a.details::text ilike '%'||$8||'%' or concat(u.first_name,' ',u.last_name) ilike '%'||$8||'%') order by a.id desc limit $3`, [req.user.clinic_id, /^\d+$/.test(req.query.before || '') ? req.query.before : null, Math.min(200, Math.max(1, parseInt(req.query.limit) || 100)),
     /^[0-9a-f-]{36}$/.test(req.query.user || '') ? req.query.user : null, /^[A-Z_%,]+$/.test(req.query.actions || '') ? req.query.actions : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null, clean(req.query.q, 60) || null])).rows)))
 
-const D = { pool, q, need, auth, audit, fail, wrap, clean }; billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
+const D = { pool, q, need, auth, audit, fail, wrap, clean }; recovery(app, { ...D, pwProblem }); billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
 app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
 // adresses du réseau local : les autres ordinateurs, tablettes et téléphones connectés au même Wi-Fi / réseau ouvrent l'une d'elles
 // adresses utiles seulement : cartes virtuelles (VirtualBox, VMware, Hyper-V, WSL, Docker, Bluetooth) écartées, Wi-Fi en premier
@@ -262,6 +334,9 @@ app.use((err, req, res, next) => { console.error(err); err.status === 413 ? fail
   try { await migrate(c, () => {}); if (process.env.OWNER_EMAIL && process.env.OWNER_PASSWORD) await ensureOwner(c, process.env.OWNER_EMAIL, process.env.OWNER_PASSWORD, () => {})
     // après la création de la clinique (premier démarrage) : sinon le réglage ne s'appliquerait qu'au démarrage suivant
     if (['true', 'false'].includes(process.env.REQUIRE_2FA)) await c.query('update clinics set require_2fa=$1', [process.env.REQUIRE_2FA === 'true']) } finally { c.release() } }
+// redémarrage du serveur : toutes les sessions sont fermées, chacun doit se reconnecter (KEEP_SESSIONS=true pour garder les connexions)
+if (process.env.KEEP_SESSIONS !== 'true') try { const r = await q('update user_sessions set revoked_at=now() where revoked_at is null'); if (r.rowCount) console.log('Sessions fermées au démarrage :', r.rowCount) } catch (e) { console.error('Sessions :', e.message) }
+try { for (const u of (await q('select id,first_name,last_name from users where username is null')).rows) await q('update users set username=$2 where id=$1', [u.id, await makeUsername(u.first_name, u.last_name)]) } catch (e) { console.error('Noms d\'utilisateur :', e.message) }
 try { const r = await protectExisting(q, config.storageDir); if (r.rows || r.files) console.log(`Données médicales chiffrées : ${r.rows} enregistrement(s), ${r.files} document(s)`) } catch (e) { console.error('Chiffrement des données :', e.message) }
 try { const n = await ensureLogTriggers(); if (n) console.log('Journal des transactions activé sur', n, 'table(s)') } catch (e) { console.error('Journal des transactions :', e.message) }
 const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { server.keepAliveTimeout = 65000; server.headersTimeout = 66000; console.log('DENTAL LIGHT prêt sur le port', config.port); if (config.hosted) { const d = process.env.RAILWAY_PUBLIC_DOMAIN; console.log(d ? 'Adresse publique : https://' + d : 'Aucune adresse publique : Railway → service → Settings → Networking → Generate Domain (port ' + config.port + ')'); console.log(config.volume ? 'Données sur le volume : ' + config.volume : 'ATTENTION : aucun volume, les données seront effacées au prochain redéploiement'); return }

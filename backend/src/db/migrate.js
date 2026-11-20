@@ -24,7 +24,7 @@ export async function migrate(client, log = console.log) {
 }
 
 export async function ensureOwner(client, email, password, log = console.log) {
-  const ex = (await client.query("select id,last_login_at from users where role='OWNER' limit 1")).rows[0]
+  const ex = (await client.query("select id,last_login_at from users where role='OWNER' and not coalesce((to_jsonb(users)->>'is_emergency')::boolean, false) order by created_at limit 1")).rows[0]
   if (ex) {
     // Tant que le propriétaire ne s'est jamais connecté, .env fait foi (permet de corriger e-mail / mot de passe).
     if (!ex.last_login_at && email && password && password.length >= 10) {
