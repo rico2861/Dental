@@ -1,0 +1,47 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Installer les dépendances (production)
+        working-directory: backend
+        run: npm install --omit=dev --no-audit --no-fund
+
+      - name: Embarquer le runtime Node
+        shell: pwsh
+        run: |
+          $ver = "v20.17.0"
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip" -OutFile node.zip
+          Expand-Archive node.zip -DestinationPath node-extract -Force
+          New-Item -ItemType Directory -Force -Path installer/node | Out-Null
+          Copy-Item "node-extract/node-$ver-win-x64/node.exe" installer/node/node.exe
+
+      - name: Installer Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compiler l'installeur
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\dental-light.iss'
+
+      - name: Artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DentalLight-Setup
+          path: installer/Output/*.exe
+
+      - name: Publier la release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/*.exe

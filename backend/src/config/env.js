@@ -4,7 +4,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')   // …/backend
-dotenv.config({ path: path.join(ROOT, '.env') })
+// .env : dans DATA_ROOT s'il est défini (installeur Windows → dossier inscriptible), sinon dans backend/
+const ENV_PATH = process.env.DATA_ROOT ? path.join(process.env.DATA_ROOT, '.env') : path.join(ROOT, '.env')
+dotenv.config({ path: ENV_PATH })
 
 // clé collée avec des espaces, des guillemets ou « JWT_SECRET= » devant : corrigée automatiquement
 if (process.env.JWT_SECRET) { let k = process.env.JWT_SECRET.trim(); for (let i = 0; i < 2; i++) k = k.replace(/^['"]|['"]$/g, '').trim().replace(/^JWT_SECRET\s*=\s*/, '').trim(); process.env.JWT_SECRET = k }

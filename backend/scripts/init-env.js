@@ -4,7 +4,10 @@ import path from 'path'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), envp = path.join(root, '.env')
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// .env dans DATA_ROOT s'il est défini (installeur Windows : dossier inscriptible), sinon dans backend/
+const dataRoot = process.env.DATA_ROOT; if (dataRoot) fs.mkdirSync(dataRoot, { recursive: true })
+const envp = path.join(dataRoot || root, '.env')
 const secret = () => crypto.randomBytes(48).toString('hex')
 // clé collée avec des espaces, des guillemets ou « JWT_SECRET= » devant : corrigée automatiquement
 if (process.env.JWT_SECRET) { let k = process.env.JWT_SECRET.trim(); for (let i = 0; i < 2; i++) k = k.replace(/^['"]|['"]$/g, '').trim().replace(/^JWT_SECRET\s*=\s*/, '').trim(); process.env.JWT_SECRET = k }
@@ -31,7 +34,14 @@ if (hosted) {
   let t = fs.readFileSync(path.join(root, '.env.example'), 'utf8')
   t = t.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=' + secret()).replace(/^OWNER_PASSWORD=.*$/m, 'OWNER_PASSWORD=' + pw)
   fs.writeFileSync(envp, t)
-  console.log('.env créé. Compte propriétaire :', (t.match(/^OWNER_EMAIL=(.*)$/m) || [])[1], '/ mot de passe temporaire :', pw)
+  const ownerEmail = (t.match(/^OWNER_EMAIL=(.*)$/m) || [])[1]
+  console.log('.env créé. Compte propriétaire :', ownerEmail, '/ mot de passe temporaire :', pw)
+  // Fiche lisible pour la première connexion (surtout en installation Windows où la console est masquée)
+  try { fs.writeFileSync(path.join(dataRoot || root, 'PREMIER-DEMARRAGE.txt'),
+    ['DENTAL LIGHT — première connexion', '', 'Ouvrez http://localhost:3000 dans votre navigateur.', '',
+     'Identifiant propriétaire : ' + ownerEmail, 'Mot de passe temporaire : ' + pw, '',
+     'Vous devrez changer ce mot de passe à la première connexion.',
+     'Si l\'accès est bloqué, entrez d\'abord le code d\'activation de votre clinique.', ''].join('\r\n')) } catch {}
 } else {
   let t = fs.readFileSync(envp, 'utf8')
   if (/^JWT_SECRET=(remplacez|\s*$)/m.test(t)) { fs.writeFileSync(envp, t.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=' + secret())); console.log('JWT_SECRET généré dans .env') }
