@@ -12,17 +12,19 @@ const dec = s => { const b = Buffer.from(s, 'base64'), d = crypto.createDecipher
 export const QUIET = ['user_role', '2fa_enabled', 'rate_changed']
 export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => QUIET.includes(kind) ? Promise.resolve() : q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
 // ── codes à usage unique : envoyés par e-mail, ou délivrés par la direction (fonctionnent sans Internet) ──
-import { sendMail } from '../lib/mail.js'
+import { sendMail, deliver, resendReady } from '../lib/mail.js'
+import { status as licenseStatus, fingerprint as hostFingerprint } from '../lib/license.js'
 export const maskEmail = e => String(e || '').replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b)
 export const mailCfg = async (q, clinicId) => { const s = (await q('select smtp from clinics where id=$1', [clinicId])).rows[0]?.smtp; return s?.host && s?.from ? { ...s, pass: s.pass_enc ? dec(s.pass_enc) : '' } : null }
 const newCode = async (q, userId, kind, minutes, digits = 6, by = null) => { const code = String(crypto.randomInt(0, 10 ** digits)).padStart(digits, '0')
   await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [userId, kind])
   await q('insert into login_codes(user_id,kind,code_hash,expires_at,created_by) values($1,$2,$3,now()+make_interval(mins=>$4),$5)', [userId, kind, sha(userId + ':' + code), minutes, by]); return code }
 export async function sendEmailCode(q, u, kind = 'email') {
-  const cfg = await mailCfg(q, u.clinic_id); if (!cfg) return { sent: false, reason: "Aucun serveur d'e-mail n'est configuré par la clinique" }
+  const cfg = await mailCfg(q, u.clinic_id); if (!cfg && !resendReady() && !process.env.SAAS_URL) return { sent: false, reason: "Aucun serveur d'e-mail n'est configuré par la clinique" }
   const last = (await q("select created_at from login_codes where user_id=$1 and kind=$2 order by created_at desc limit 1", [u.id, kind])).rows[0]; if (last && Date.now() - new Date(last.created_at) < 30e3) return { sent: true, recent: true, to: maskEmail(u.email), wait: true }
   const code = await newCode(q, u.id, kind, 10)
-  try { await sendMail({ ...cfg, to: u.email, subject: `${code} — votre code de connexion DENTAL`, text: `Bonjour ${u.first_name},\n\nVotre code de connexion à usage unique : ${code}\nIl est valable 10 minutes et ne peut servir qu'une fois.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction de la clinique.`,
+  let relay = null; try { const ls = licenseStatus(); relay = { clinic_id: ls.clinic_id, fingerprint: hostFingerprint() } } catch {}
+  try { await deliver({ cfg, relay, to: u.email, subject: `${code} — votre code de connexion DENTAL`, text: `Bonjour ${u.first_name},\n\nVotre code de connexion à usage unique : ${code}\nIl est valable 10 minutes et ne peut servir qu'une fois.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction de la clinique.`,
       html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e3e8ef;border-radius:14px"><h2 style="color:#0f2a5c;margin:0 0 8px">DENTAL</h2><p>Bonjour ${u.first_name},</p><p>Votre code de connexion à usage unique :</p><p style="font-size:32px;letter-spacing:8px;font-weight:bold;color:#1d6fd8;margin:12px 0">${code}</p><p style="color:#5b6778">Valable 10 minutes, utilisable une seule fois. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction.</p></div>` })
     return { sent: true, to: maskEmail(u.email) } }
   catch (e) { await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [u.id, kind]); return { sent: false, reason: e.message } } }

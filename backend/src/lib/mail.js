@@ -26,3 +26,37 @@ export function sendMail({ host, port = 587, user, pass, from, to, subject, text
     sock = Number(port) === 465 ? tls.connect({ host, port: 465, servername: host }) : net.connect({ host, port: Number(port) })
     sock.on('data', onData); sock.on('error', e => fail(new Error(e.code === 'ENOTFOUND' || e.code === 'EAI_AGAIN' ? 'Serveur e-mail introuvable (pas de connexion Internet ?)' : 'Serveur e-mail : ' + e.message))); sock.on('close', () => { if (!done) fail(new Error('Connexion au serveur e-mail interrompue')) })
   }) }
+
+// ── Secours sans configuration : Resend (HTTPS, port 443) ou relais via le backend SaaS ──
+const SAAS_URL = () => (process.env.SAAS_URL || '').replace(/\/+$/, '')
+export const resendReady = () => !!process.env.RESEND_API_KEY
+
+async function post(url, body, headers = {}) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 15000)
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctrl.signal })
+    if (!r.ok) throw new Error((await r.text().catch(() => '')).slice(0, 140) || ('HTTP ' + r.status))
+    return r
+  } finally { clearTimeout(t) }
+}
+
+export async function sendViaResend({ to, subject, text, html }) {
+  const from = process.env.MAIL_FROM ? (process.env.MAIL_FROM.includes('<') ? process.env.MAIL_FROM : `DENTAL <${process.env.MAIL_FROM}>`) : 'DENTAL <onboarding@resend.dev>'
+  await post('https://api.resend.com/emails', { from, to, subject, html: html || text, text }, { Authorization: `Bearer ${process.env.RESEND_API_KEY}` })
+  return { ok: true }
+}
+
+// Relais : l'app demande au backend SaaS d'envoyer (la clé e-mail reste sur le serveur).
+export async function relayMail({ clinic_id, fingerprint, to, subject, text, html }) {
+  if (!SAAS_URL()) throw new Error('Relais e-mail indisponible (SAAS_URL non défini)')
+  await post(SAAS_URL() + '/api/relay-mail', { clinic_id, fingerprint, to, subject, text, html })
+  return { ok: true }
+}
+
+// Choisit automatiquement : SMTP de la clinique → Resend local → relais SaaS.
+export async function deliver({ cfg, relay, to, subject, text, html }) {
+  if (cfg?.host) { try { return await sendMail({ ...cfg, to, subject, text, html }) } catch (e) { if (!resendReady() && !SAAS_URL()) throw e } }
+  if (resendReady()) return await sendViaResend({ to, subject, text, html })
+  if (relay && SAAS_URL()) return await relayMail({ ...relay, to, subject, text, html })
+  throw new Error("Aucun moyen d'envoi d'e-mail (SMTP de la clinique, Resend ou relais SaaS)")
+}
