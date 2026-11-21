@@ -1,4 +1,4 @@
-// DENTAL LIGHT — lanceur et gardien du service (démarrage automatique). Ne pas lancer à la main : voir scripts/service.js.
+// DENTAL — lanceur et gardien du service (démarrage automatique). Ne pas lancer à la main : voir scripts/service.js.
 //  • démarre le serveur et le relance s'il s'arrête (plantage, restauration de sauvegarde…) ;
 //  • vérifie toutes les 30 s qu'il RÉPOND vraiment (la vérification interroge la base) : s'il est figé
 //    3 fois de suite (≈ 1 min 30), il est arrêté puis relancé ;

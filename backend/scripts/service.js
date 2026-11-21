@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DENTAL LIGHT — DÉMARRAGE AUTOMATIQUE (Windows et Linux)
-//   npm run service:installer     démarre DENTAL LIGHT tout seul à l'allumage de l'ordinateur (et le relance s'il s'arrête)
+// DENTAL — DÉMARRAGE AUTOMATIQUE (Windows et Linux)
+//   npm run service:installer     démarre DENTAL tout seul à l'allumage de l'ordinateur (et le relance s'il s'arrête)
 //   npm run service:desinstaller  retire le démarrage automatique
 //   npm run service:etat          indique s'il est installé et s'il répond
 //   npm run service:demarrer / service:arreter
@@ -14,7 +14,7 @@
 import { spawnSync } from 'child_process'; import fs from 'fs'; import os from 'os'; import path from 'path'; import { fileURLToPath } from 'url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), RUN = path.join(ROOT, 'scripts', 'service-run.js'), NODE = process.execPath
-const NAME = 'DENTAL LIGHT', WATCH = 'DENTAL LIGHT - surveillance', UNIT = 'dental-light', cmd = process.argv[2] || 'etat'
+const NAME = 'DENTAL', WATCH = 'DENTAL - surveillance', UNIT = 'dental-light', cmd = process.argv[2] || 'etat'
 const LOGS = path.join(ROOT, 'logs'), STOPF = path.join(LOGS, 'arret-volontaire'), SVC = path.join(ROOT, 'scripts', 'service.js')
 const note = m => { try { fs.mkdirSync(LOGS, { recursive: true }); fs.appendFileSync(path.join(LOGS, 'serveur.log'), `[${new Date().toLocaleString('fr-FR')}] ${m}\n`) } catch {} }
 const runnerAlive = () => { try { const pf = path.join(LOGS, 'service.pid'), pid = Number(fs.readFileSync(pf, 'utf8')); if (Date.now() - fs.statSync(pf).mtimeMs > 30e3) return false; process.kill(pid, 0); return true } catch { return false } }
@@ -33,11 +33,11 @@ function winTask(admin) {
   let exe = NODE, args = `"${RUN}"`
   if (!admin) {   // ouverture de session : lancé par un petit script VBS pour qu'aucune fenêtre ne s'affiche
     const vbs = path.join(ROOT, 'scripts', 'service-cache.vbs')
-    fs.writeFileSync(vbs, `' DENTAL LIGHT : lance le service sans fenêtre (créé par npm run service:installer)\r\nCreateObject("WScript.Shell").Run """${NODE}"" ""${RUN}""", 0, False\r\n`)
+    fs.writeFileSync(vbs, `' DENTAL : lance le service sans fenêtre (créé par npm run service:installer)\r\nCreateObject("WScript.Shell").Run """${NODE}"" ""${RUN}""", 0, False\r\n`)
     exe = 'wscript.exe'; args = `"${vbs}"` }
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>DENTAL LIGHT : démarre le serveur de la clinique automatiquement et le relance en cas d'arrêt.</Description></RegistrationInfo>
+  <RegistrationInfo><Description>DENTAL : démarre le serveur de la clinique automatiquement et le relance en cas d'arrêt.</Description></RegistrationInfo>
   <Triggers>${admin ? '<BootTrigger><Enabled>true</Enabled><Delay>PT20S</Delay></BootTrigger>' : `<LogonTrigger><Enabled>true</Enabled><UserId>${xmlEsc(user)}</UserId></LogonTrigger>`}</Triggers>
   <Principals><Principal id="Author">${admin ? '<UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel>' : `<UserId>${xmlEsc(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>`}</Principal></Principals>
   <Settings>
@@ -54,11 +54,11 @@ function winTask(admin) {
 function winWatch(admin) {
   const user = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${os.userInfo().username}` : os.userInfo().username
   let exe = NODE, args = `"${SVC}" verifier`
-  if (!admin) { const vbs = path.join(ROOT, 'scripts', 'service-surveillance.vbs'); fs.writeFileSync(vbs, `' DENTAL LIGHT : vérification sans fenêtre (créé par npm run service:installer)\r\nCreateObject("WScript.Shell").Run """${NODE}"" ""${SVC}"" verifier", 0, False\r\n`); exe = 'wscript.exe'; args = `"${vbs}"` }
+  if (!admin) { const vbs = path.join(ROOT, 'scripts', 'service-surveillance.vbs'); fs.writeFileSync(vbs, `' DENTAL : vérification sans fenêtre (créé par npm run service:installer)\r\nCreateObject("WScript.Shell").Run """${NODE}"" ""${SVC}"" verifier", 0, False\r\n`); exe = 'wscript.exe'; args = `"${vbs}"` }
   const start = new Date(Date.now() + 60e3).toISOString().slice(0, 19)
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>DENTAL LIGHT : vérifie toutes les 5 minutes que l'application tourne et la relance sinon.</Description></RegistrationInfo>
+  <RegistrationInfo><Description>DENTAL : vérifie toutes les 5 minutes que l'application tourne et la relance sinon.</Description></RegistrationInfo>
   <Triggers><TimeTrigger><Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>${start}</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
   <Principals><Principal id="Author">${admin ? '<UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel>' : `<UserId>${xmlEsc(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>`}</Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT5M</ExecutionTimeLimit><Enabled>true</Enabled><AllowStartOnDemand>true</AllowStartOnDemand></Settings>
@@ -97,11 +97,11 @@ async function linux() {
   const scope = fs.existsSync(sysUnit) ? 'system' : fs.existsSync(userUnit) ? 'user' : null
   const dirOf = system => system ? '/etc/systemd/system' : userUnitDir
   // surveillance : minuterie systemd toutes les 5 minutes → « service.js verifier »
-  const watchUnits = system => ({ [`${UNIT}-surveillance.service`]: `[Unit]\nDescription=DENTAL LIGHT - vérification de l'application\n\n[Service]\nType=oneshot\nWorkingDirectory=${ROOT}\nExecStart=${NODE} ${SVC} verifier\n`,
-    [`${UNIT}-surveillance.timer`]: `[Unit]\nDescription=DENTAL LIGHT - vérification toutes les 5 minutes\n\n[Timer]\nOnBootSec=3min\nOnUnitActiveSec=5min\nUnit=${UNIT}-surveillance.service\n\n[Install]\nWantedBy=timers.target\n` })
+  const watchUnits = system => ({ [`${UNIT}-surveillance.service`]: `[Unit]\nDescription=DENTAL - vérification de l'application\n\n[Service]\nType=oneshot\nWorkingDirectory=${ROOT}\nExecStart=${NODE} ${SVC} verifier\n`,
+    [`${UNIT}-surveillance.timer`]: `[Unit]\nDescription=DENTAL - vérification toutes les 5 minutes\n\n[Timer]\nOnBootSec=3min\nOnUnitActiveSec=5min\nUnit=${UNIT}-surveillance.service\n\n[Install]\nWantedBy=timers.target\n` })
   const ctl = (s, ...a) => sh('systemctl', s === 'user' ? ['--user', ...a] : a)
   const unit = (system) => `[Unit]
-Description=DENTAL LIGHT - serveur de la clinique
+Description=DENTAL - serveur de la clinique
 After=network-online.target
 Wants=network-online.target
 
@@ -119,7 +119,7 @@ WantedBy=${system ? 'multi-user.target' : 'default.target'}
 `
   if (cmd === 'installer') {
     if (root) { fs.writeFileSync(sysUnit, unit(true)); if (owner !== 'root') sh('chown', ['-R', `${owner}:`, path.join(ROOT, 'logs')]); ctl('system', 'daemon-reload'); const r = ctl('system', 'enable', '--now', UNIT); if (!ok(r)) die(r.stderr.trim())
-      out(`\n✔ Service système installé : DENTAL LIGHT démarre avec l'ordinateur (utilisateur ${owner}).`) }
+      out(`\n✔ Service système installé : DENTAL démarre avec l'ordinateur (utilisateur ${owner}).`) }
     else { fs.mkdirSync(userUnitDir, { recursive: true }); fs.writeFileSync(userUnit, unit(false)); ctl('user', 'daemon-reload'); const r = ctl('user', 'enable', '--now', UNIT); if (!ok(r)) die(r.stderr.trim())
       const linger = ok(sh('loginctl', ['enable-linger', owner]))
       out(`\n✔ Service utilisateur installé.${linger ? ' Il démarre avec l\'ordinateur, même sans ouvrir de session.' : `\n  Pour qu'il démarre sans ouvrir de session : sudo loginctl enable-linger ${owner}\n  (ou réinstallez en service système : sudo npm run service:installer)`}`) }

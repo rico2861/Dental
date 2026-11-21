@@ -24,7 +24,7 @@ export function makePdf(res, name, build, { footer = '', landscape = false } = {
 // ── Aides génériques (utilisées aussi par les exports de rapports) ──
 export function header(doc, cl, title, sub) {
   doc.rect(0, 0, doc.page.width, 6).fill(BLUE)
-  doc.fillColor(INK).font('Helvetica-Bold').fontSize(19).text((cl.name || 'DENTAL LIGHT').toUpperCase(), 40, 24, { width: W(doc) })
+  doc.fillColor(INK).font('Helvetica-Bold').fontSize(19).text((cl.name || 'DENTAL').toUpperCase(), 40, 24, { width: W(doc) })
   doc.font('Helvetica').fontSize(8.5).fillColor(GREY).text([cl.address, cl.phone && 'Tél : ' + cl.phone].filter(Boolean).join('   ·   '), 40, doc.y + 1, { width: W(doc) })
   const y = doc.y + 6; doc.moveTo(40, y).lineTo(40 + W(doc), y).lineWidth(1.4).strokeColor(BLUE).stroke()
   doc.fillColor(INK).font('Helvetica-Bold').fontSize(14).text(title, 40, y + 10, { width: W(doc) })
@@ -66,7 +66,7 @@ const ensure = (doc, h) => { if (doc.y + h > BOT(doc)) { doc.addPage(); doc.y = 
 function topHeader(doc, cl, title, meta) {
   const w = W(doc); doc.rect(0, 0, doc.page.width, 6).fill(C.brand)
   doc.roundedRect(40, 26, 38, 38, 10).fill(C.brand); doc.font('Helvetica-Bold').fontSize(18).fillColor('#fff').text(sp(cl.name || 'D').trim()[0].toUpperCase(), 40, 36, { width: 38, align: 'center' })
-  doc.font('Helvetica-Bold').fontSize(14.5).fillColor(C.ink).text(sp(cl.name || 'DENTAL LIGHT'), 88, 27, { width: 240 })
+  doc.font('Helvetica-Bold').fontSize(14.5).fillColor(C.ink).text(sp(cl.name || 'DENTAL'), 88, 27, { width: 240 })
   const info = [cl.address, cl.phone && 'Tél. ' + cl.phone].filter(Boolean).map(sp).join('\n'); if (info) doc.font('Helvetica').fontSize(8).fillColor(C.grey).text(info, 88, doc.y + 1, { width: 240 })
   const leftEnd = doc.y
   doc.font('Helvetica-Bold').fontSize(18).fillColor(C.brand).text(title, 330, 25, { width: 40 + w - 330, align: 'right' })
@@ -222,7 +222,7 @@ export function diagnosticPdf(doc, { clinic: cl = {}, p = null, h = {}, exam = n
   const L = 40, w = W(doc), blank = !p, val = v => blank || v == null || v === '' ? '' : sp(v)
   const yn = v => blank || v == null || v === '' ? '' : v === true || v === 'oui' || v === 'yes' ? 'Oui' : v === false || v === 'non' || v === 'no' ? 'Non' : sp(v)
   // en-tête : nom de la clinique, adresse, téléphone
-  doc.fillColor('#111').font('Helvetica-Bold').fontSize(26).text(sp((cl.name || 'DENTAL LIGHT').toUpperCase()), L, 34, { width: w, align: 'center' })
+  doc.fillColor('#111').font('Helvetica-Bold').fontSize(26).text(sp((cl.name || 'DENTAL').toUpperCase()), L, 34, { width: w, align: 'center' })
   doc.font('Helvetica-Bold').fontSize(10.5).text(sp('ADRESSE : ' + (cl.address || '').toUpperCase()), L, doc.y + 2, { width: w, align: 'center' })
   doc.text(sp('TÉL : ' + (cl.phone || '')), L, doc.y + 1, { width: w, align: 'center' })
   let y = doc.y + 6; doc.moveTo(L, y).lineTo(L + w, y).lineWidth(1.6).strokeColor('#111').stroke()

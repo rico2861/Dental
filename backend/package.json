@@ -1,7 +1,7 @@
 {
   "name": "dental-light-backend",
   "version": "1.0.0",
-  "description": "DENTAL LIGHT — API et serveur (Node.js + base PostgreSQL embarquée)",
+  "description": "DENTAL — API et serveur (Node.js + base PostgreSQL embarquée)",
   "private": true,
   "type": "module",
   "engines": {

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  DENTAL LIGHT — Vérification de licence (côté app, 100 % hors ligne)
+//  DENTAL — Vérification de licence (côté app, 100 % hors ligne)
 //
 //  Ce fichier ne contient QUE la vérification : la clé PUBLIQUE est embarquée,
 //  aucune clé privée. Il ne peut pas créer de licence, seulement en lire une.

@@ -32,8 +32,8 @@ export async function ensureOwner(client, email, password, log = console.log) {
       log('Propriétaire synchronisé avec .env (jamais connecté).'); return false }
     log('Propriétaire déjà créé.'); return false }
   if (!email || !password || password.length < 10) throw new Error('OWNER_EMAIL / OWNER_PASSWORD (10+ car.) requis')
-  const { rows: [cl] } = await client.query("insert into clinics(name,address,phone) values('DENTAL LIGHT','Communauté de Saint-Marie, Canapé-Vert','+509 4418-9475') returning id")
-  await client.query("insert into users(clinic_id,email,password_hash,first_name,last_name,role,must_change_password) values($1,$2,$3,'Propriétaire','DENTAL LIGHT','OWNER',true)",
+  const { rows: [cl] } = await client.query("insert into clinics(name,address,phone) values('DENTAL','Communauté de Saint-Marie, Canapé-Vert','+509 4418-9475') returning id")
+  await client.query("insert into users(clinic_id,email,password_hash,first_name,last_name,role,must_change_password) values($1,$2,$3,'Propriétaire','DENTAL','OWNER',true)",
     [cl.id, email.toLowerCase(), await bcrypt.hash(password, 12)])
   log('Clinique et propriétaire créés. Changement de mot de passe exigé à la 1re connexion.')
   return true

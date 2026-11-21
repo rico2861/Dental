@@ -5,9 +5,9 @@ const TOT = /HTG|Net|Payé|Reste|Total|Base|Commission|Prime|Déduction|Avance|N
 const isDate = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v), isNum = (c, v) => c[2] === 'n' && v !== '' && v != null && !isNaN(v)
 const totalsOf = (cols, rows) => cols.map(c => c[2] === 'n' && TOT.test(c[1]) && !NOTOT.test(c[1]) && !/^(currency|rate)$/.test(c[0]) ? rows.reduce((s, r) => s + (isNum(c, r[c[0]]) ? Number(r[c[0]]) : 0), 0) : null)
 export async function xlsx({ clinic, title, period, cols, rows, by, safe }) {
-  const wb = new ExcelJS.Workbook(); wb.creator = clinic.name || 'DENTAL LIGHT'; const ws = wb.addWorksheet(title.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31), { views: [{ state: 'frozen', ySplit: 5 }], pageSetup: { orientation: cols.length > 6 ? 'landscape' : 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } })
+  const wb = new ExcelJS.Workbook(); wb.creator = clinic.name || 'DENTAL'; const ws = wb.addWorksheet(title.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31), { views: [{ state: 'frozen', ySplit: 5 }], pageSetup: { orientation: cols.length > 6 ? 'landscape' : 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } })
   const n = cols.length; const put = (r, v, f) => { const c = ws.getCell(r, 1); c.value = v; Object.assign(c, f); ws.mergeCells(r, 1, r, n) }
-  put(1, (clinic.name || 'DENTAL LIGHT').toUpperCase(), { font: { bold: true, size: 16, color: { argb: 'FF1D6FD8' } } })
+  put(1, (clinic.name || 'DENTAL').toUpperCase(), { font: { bold: true, size: 16, color: { argb: 'FF1D6FD8' } } })
   put(2, title, { font: { bold: true, size: 13 } }); put(3, [period, `${rows.length} ligne(s)`, `Généré le ${fdt(new Date())} par ${by}`].filter(Boolean).join('   ·   '), { font: { size: 9, color: { argb: 'FF5B6778' } } })
   const hr = ws.getRow(5); cols.forEach((c, i) => { const x = hr.getCell(i + 1); x.value = c[1]; x.font = { bold: true, color: { argb: 'FFFFFFFF' } }; x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D6FD8' } }; x.alignment = { vertical: 'middle', horizontal: c[2] === 'n' ? 'right' : 'left', wrapText: true }; x.border = { bottom: { style: 'thin', color: { argb: 'FF1558B0' } } } }); hr.height = 24
   rows.forEach((r, ri) => { const row = ws.getRow(6 + ri); cols.forEach((c, i) => { const v = r[c[0]], x = row.getCell(i + 1)
@@ -25,4 +25,4 @@ export function pdf(res, name, { clinic, title, period, cols, rows, by }) {
   const fmt = (c, v) => isNum(c, v) ? (/^(qty|n|stock|min_stock|consultations|interventions|prostheses)$/.test(c[0]) ? Number(v).toLocaleString('fr-FR') : num(v)) : isDate(v) ? v.split('-').reverse().join('/') : String(v ?? '')
   makePdf(res, name, doc => { header(doc, clinic, title, [period, `${rows.length} ligne(s)`].filter(Boolean).join('   ·   '))
     table(doc, cols.map((c, i) => ({ h: c[1], w: wts[i], a: c[2] === 'n' ? 'right' : 'left' })), rows.slice(0, 3000).map(r => cols.map(c => fmt(c, r[c[0]]))), { totals: rows.length && t.some(v => v != null) ? cols.map((c, i) => i === 0 && t[i] == null ? 'TOTAL' : t[i] != null ? num(t[i]) : '') : null }) },
-    { footer: `${clinic.name || 'DENTAL LIGHT'}   ·   édité par ${by}   ·   ${fdt(new Date())}`, landscape: land }) }
+    { footer: `${clinic.name || 'DENTAL'}   ·   édité par ${by}   ·   ${fdt(new Date())}`, landscape: land }) }

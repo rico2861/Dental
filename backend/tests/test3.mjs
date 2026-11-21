@@ -30,7 +30,7 @@ r = await o('GET', `/reports/patients?format=csv&from=2000-01-01&to=2100-01-01`)
 const dr = mk(); await dr('POST', '/login', { email: 'dr2@test.com', password: 'DocteurMdp#2026c' })
 T('médecin : rapport consultations en JSON', (await dr('GET', '/reports/consultations')).s === 200); T('médecin : export refusé', (await dr('GET', '/reports/consultations?format=csv')).s === 403); T('médecin : pas de rapport salaires', (await dr('GET', '/reports/salaries')).s === 403)
 // Documents
-const pats = (await o('GET', '/patients?q=Doc')).j.rows, pid = pats[0].id, pdf = Buffer.from('%PDF-1.4\n%contenu de test pour DENTAL LIGHT\n')
+const pats = (await o('GET', '/patients?q=Doc')).j.rows, pid = pats[0].id, pdf = Buffer.from('%PDF-1.4\n%contenu de test pour DENTAL\n')
 r = await o('POST', `/patients/${pid}/documents`, pdf, { 'x-doc-kind': 'ordonnance', 'x-file-name': encodeURIComponent('ordonnance é.pdf') }); T('upload PDF', r.s === 200 && r.j.id, r); const doc = r.j.id
 r = await o('POST', `/patients/${pid}/documents`, Buffer.from('MZ\x90\x00 programme malveillant ...........'), { 'x-doc-kind': 'pdf', 'x-file-name': 'virus.pdf' }); T('fichier exécutable refusé (415)', r.s === 415, r)
 r = await o('POST', `/patients/${pid}/documents`, Buffer.from('<html><script>alert(1)</script></html>'), { 'x-doc-kind': 'photo', 'x-file-name': 'a.png' }); T('HTML déguisé en image refusé', r.s === 415, r)

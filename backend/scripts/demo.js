@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DENTAL LIGHT — CLINIQUE DE DÉMONSTRATION
+// DENTAL — CLINIQUE DE DÉMONSTRATION
 //   npm run demo            → démarre la démo (la crée au premier lancement)
 //   npm run demo -- --reset → efface la démo et la recrée
 //   npm run demo -- --ici   → AJOUTE les données fictives dans la VRAIE plateforme (serveur arrêté ;
@@ -282,7 +282,7 @@ if (fresh) {
 
 if (process.argv.includes('--seed-only')) process.exit(0)
 await start(false)
-console.log(`\n══ DÉMO DENTAL LIGHT ══  http://localhost:${PORT}   (données fictives, base séparée)`)
+console.log(`\n══ DÉMO DENTAL ══  http://localhost:${PORT}   (données fictives, base séparée)`)
 console.log(fs.existsSync(path.join(DIR, 'comptes.txt')) ? fs.readFileSync(path.join(DIR, 'comptes.txt'), 'utf8') : '')
 console.log('Ctrl+C pour arrêter.')
 process.on('SIGINT', async () => { await stop(); process.exit(0) })

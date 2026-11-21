@@ -99,7 +99,7 @@ export default function install({ $, esc, api, can, toast, render }) {
   }
   const click = async (b, a, id) => {
     if (a === 'rc-gen') { if (!await ui.confirm('Les codes actuels ne fonctionneront plus.', { title: 'Générer de nouveaux codes ?', ok: 'Générer' })) return
-      const r = await api('/recovery-codes', {}), txt = 'DENTAL LIGHT — codes de récupération\n' + new Date().toLocaleDateString('fr-FR') +'\n\n' + r.codes.join('\n') + '\n\nUsage unique. À garder hors de l\'ordinateur.'
+      const r = await api('/recovery-codes', {}), txt = 'DENTAL — codes de récupération\n' + new Date().toLocaleDateString('fr-FR') +'\n\n' + r.codes.join('\n') + '\n\nUsage unique. À garder hors de l\'ordinateur.'
       await ui.dialog({ title: 'Vos codes de récupération', sub: 'Affichés une seule fois. Chaque code ne sert qu\'une fois.', icon: 'key', html: `<div class="rcg">${r.codes.map(c => `<code>${esc(c)}</code>`).join('')}</div><p class="note">Notez-les ou téléchargez-les, puis rangez-les hors de cet ordinateur (papier dans un coffre, clé USB).</p>`,
         buttons: [{ label: 'Télécharger (.txt)', cls: 'sec', value: 'dl' }, { label: "C'est noté", cls: 'pri', value: true }] }).then(v => { if (v === 'dl') { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.download = 'dental-light-codes-recuperation.txt'; a.click() } })
       render(); return }

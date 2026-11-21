@@ -38,7 +38,7 @@ if (hosted) {
   console.log('.env créé. Compte propriétaire :', ownerEmail, '/ mot de passe temporaire :', pw)
   // Fiche lisible pour la première connexion (surtout en installation Windows où la console est masquée)
   try { fs.writeFileSync(path.join(dataRoot || root, 'PREMIER-DEMARRAGE.txt'),
-    ['DENTAL LIGHT — première connexion', '', 'Ouvrez http://localhost:3000 dans votre navigateur.', '',
+    ['DENTAL — première connexion', '', 'Ouvrez http://localhost:3000 dans votre navigateur.', '',
      'Identifiant propriétaire : ' + ownerEmail, 'Mot de passe temporaire : ' + pw, '',
      'Vous devrez changer ce mot de passe à la première connexion.',
      'Si l\'accès est bloqué, entrez d\'abord le code d\'activation de votre clinique.', ''].join('\r\n')) } catch {}

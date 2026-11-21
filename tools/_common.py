@@ -1,4 +1,4 @@
-"""Fonctions communes aux outils d'exploitation DENTAL LIGHT (bibliothèque standard uniquement)."""
+"""Fonctions communes aux outils d'exploitation DENTAL (bibliothèque standard uniquement)."""
 from __future__ import annotations
 
 import os

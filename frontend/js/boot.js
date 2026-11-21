@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  DENTAL LIGHT — Pré-démarrage (porte de licence + personnalisation)
+//  DENTAL — Pré-démarrage (porte de licence + personnalisation)
 //
 //  S'exécute AVANT l'app de gestion. Il :
 //   1. applique la personnalisation de la clinique (couleur, nom) ;
@@ -13,7 +13,7 @@ const $app = document.getElementById('app')
 
 function applyBrand(brand = {}) {
   if (brand.color && /^#[0-9a-fA-F]{6}$/.test(brand.color)) document.documentElement.style.setProperty('--b', brand.color)
-  if (brand.name) document.title = brand.name + ' — DENTAL LIGHT'
+  if (brand.name) document.title = brand.name + ' — DENTAL'
 }
 
 async function licenseStatus() {
@@ -41,7 +41,7 @@ function banner(text) {
 // ─── Écran de licence (affiché quand l'accès est bloqué) ─────────────────────
 function licenseScreen(s) {
   const titles = {
-    needs_activation: 'Activer DENTAL LIGHT',
+    needs_activation: 'Activer DENTAL',
     blocked: 'Abonnement expiré',
     revoked: 'Licence suspendue',
     wrong_machine: 'Licence sur un autre ordinateur',
@@ -50,7 +50,7 @@ function licenseScreen(s) {
   const msgs = {
     needs_activation: 'Entrez le code fourni avec votre abonnement, ou importez votre fichier <b>licence.key</b>.',
     blocked: 'Votre abonnement est arrivé à échéance. <b>Vos données restent intactes sur cet ordinateur (conservées 90 jours).</b> Renouvelez, puis importez la nouvelle clé pour débloquer l’accès.',
-    revoked: 'Cette licence a été suspendue. Contactez votre fournisseur DENTAL LIGHT.',
+    revoked: 'Cette licence a été suspendue. Contactez votre fournisseur DENTAL.',
     wrong_machine: 'Cette clé est verrouillée sur un autre ordinateur. Demandez une activation pour ce poste.',
     invalid: 'Le fichier de licence est abîmé. Importez une clé valide.'
   }

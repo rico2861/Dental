@@ -1,4 +1,4 @@
-# DENTAL LIGHT
+# DENTAL
 
 Application de gestion de clinique dentaire : patients et dossiers médicaux, rendez-vous et salle d'attente, plans de
 traitement, prothèses, facturation multi-devises, caisse, stock, paie, rapports (PDF / Excel), documents et
@@ -90,8 +90,8 @@ Vérification : `npm run service:etat` doit afficher « Surveillance : INSTALLÉ
 | Niveau | Rôle |
 |---|---|
 | **Gardien** (vérifie toutes les 30 s) | Relance le serveur s'il **plante**. S'il **se fige** (il tourne mais ne répond plus pendant ≈ 1 min 30, la vérification interroge la base), il l'arrête puis le relance. |
-| **Surveillance** (toutes les 5 min) | Si l'application ne répond pas et qu'aucun gardien n'est actif (gardien disparu, PC sorti de veille…), elle la relance. Windows : tâche planifiée « DENTAL LIGHT - surveillance ». Linux : minuterie `dental-light-surveillance.timer`. |
-| **Démarrage à l'allumage** | Windows : tâche planifiée « DENTAL LIGHT ». Linux : service `dental-light`. |
+| **Surveillance** (toutes les 5 min) | Si l'application ne répond pas et qu'aucun gardien n'est actif (gardien disparu, PC sorti de veille…), elle la relance. Windows : tâche planifiée « DENTAL - surveillance ». Linux : minuterie `dental-light-surveillance.timer`. |
+| **Démarrage à l'allumage** | Windows : tâche planifiée « DENTAL ». Linux : service `dental-light`. |
 
 **Précautions intégrées :**
 
@@ -240,7 +240,7 @@ Les dossiers médicaux sont chiffrés avec `JWT_SECRET`, qui n'existe que dans `
 1. Sauvegardes → **Kit de récupération** (propriétaire, mot de passe demandé) → un fichier texte se télécharge.
 2. Rangez-le **hors du PC** (clé USB dans un coffre, copie imprimée), puis supprimez-le des Téléchargements.
 
-**Si le PC est perdu** : installez DENTAL LIGHT sur un nouveau PC → copiez le contenu du kit dans `backend/.env` →
+**Si le PC est perdu** : installez DENTAL sur un nouveau PC → copiez le contenu du kit dans `backend/.env` →
 `npm start` → Sauvegardes → **Récupérer depuis Supabase**.
 
 ---
@@ -289,7 +289,7 @@ npm run service:demarrer       # (ou npm start) — les migrations de la base s'
 
 | Problème | Solution |
 |---|---|
-| « Le port 3000 est déjà utilisé » | DENTAL LIGHT tourne déjà (souvent le service automatique) : ouvrez http://localhost:3000. La base n'a pas été touchée. |
+| « Le port 3000 est déjà utilisé » | DENTAL tourne déjà (souvent le service automatique) : ouvrez http://localhost:3000. La base n'a pas été touchée. |
 | « Missing script » | La commande a été tapée hors du dossier `backend`. |
 | Compte verrouillé | Attendre 15 min, ou `npm run recuperation -- debloquer <compte>` (serveur arrêté). |
 | Le mot de passe du `.env` ne marche pas | Normal après la première connexion : `npm run recuperation -- reinitialiser <compte>`. |

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  DENTAL LIGHT — Porte de licence (côté app)
+//  DENTAL — Porte de licence (côté app)
 //
 //  • Vérifie la licence LOCALEMENT à chaque démarrage (hors ligne) : expiration,
 //    grâce 3 jours, verrou machine → bloque l'accès automatiquement.
@@ -62,7 +62,7 @@ export function status() {
     reason: local.reason || remote.reason,
     remote_checked_at: remote.checkedAt || null,
     fingerprint: fingerprint(),
-    brand: { color: brand.color || null, name: brand.name || p.clinic || 'DENTAL LIGHT', logo: brand.logo || null }
+    brand: { color: brand.color || null, name: brand.name || p.clinic || 'DENTAL', logo: brand.logo || null }
   }
 }
 
@@ -143,7 +143,7 @@ export function licenseGate(req, res, next) {
 
 function messageFor(s) {
   if (s.needsActivation) return "Activation requise : entrez le code de votre clinique ou votre clé de licence."
-  if (s.status === 'revoked') return "Licence suspendue. Vos données restent sur cet ordinateur et sont conservées : rien n'est perdu. Contactez votre fournisseur DENTAL LIGHT."
+  if (s.status === 'revoked') return "Licence suspendue. Vos données restent sur cet ordinateur et sont conservées : rien n'est perdu. Contactez votre fournisseur DENTAL."
   if (s.status === 'wrong_machine') return "Cette licence appartient à un autre ordinateur."
   if (s.status === 'invalid') return "Licence illisible. Importez une clé valide."
   return "Abonnement expiré. Vos données restent intactes sur cet ordinateur (conservées 90 jours). Renouvelez pour débloquer l'accès."

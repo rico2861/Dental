@@ -161,7 +161,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
       pdfTable(doc, [{ h: 'Patient', w: 17 }, { h: 'Téléphone', w: 11 }, { h: 'Facture', w: 12 }, { h: 'Date', w: 8 }, { h: 'Âge', w: 5, a: 'right' }, { h: 'Médecin', w: 13 }, { h: 'Total', w: 11, a: 'right' }, { h: 'Remise', w: 9, a: 'right' }, { h: 'Payé', w: 11, a: 'right' }, { h: 'Solde', w: 11, a: 'right' }],
         rows.map(r => [r.patient + ' (' + r.file_number + ')', r.phone || '', r.number, pdfFd(r.created_at), r.age_days + ' j', r.doctor || '', pdfNum(r.total, r.currency), r.discount ? pdfNum(r.discount, r.currency) : '', pdfNum(r.paid, r.currency), pdfNum(r.balance, r.currency)]),
         { totals: Object.keys(tot).length ? ['TOTAL DÛ', '', '', '', '', '', '', '', '', Object.entries(tot).map(([c, v]) => pdfNum(v, c)).join('\n')] : null })
-    }, { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dettes patients  ·  confidentiel`, landscape: true }) }))
+    }, { footer: `${cl.name || 'DENTAL'}  ·  Dettes patients  ·  confidentiel`, landscape: true }) }))
 
   // ── Personnel & paie ──
   app.get('/api/employees', need('view_salaries'), wrap(async (req, res) => res.json((await q("select e.id,e.matricule,e.first_name,e.last_name,e.job_title,e.pay_mode,e.base_salary::text,coalesce(e.commission_pct,0)::text commission_pct,e.status,e.user_id,u.role,(select coalesce(json_agg(json_build_object('id',d.id,'label',d.label,'kind',d.kind,'value',d.value::float8) order by d.created_at),'[]'::json) from employee_deductions d where d.employee_id=e.id and d.active) deductions from employees e left join users u on u.id=e.user_id where e.clinic_id=$1 order by e.last_name", [req.user.clinic_id])).rows)))

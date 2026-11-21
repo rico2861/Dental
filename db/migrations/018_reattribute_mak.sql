@@ -9,7 +9,7 @@ with fix as (
   returning id)
 insert into audit_logs(clinic_id, user_id, action, table_name, record_id, details)
 select (select clinic_id from users where id = 'eb3de5e6-1f8a-45c0-91f0-a3cc798c1190'), null, 'REATTRIBUTED', 'treatment_plan_items', id::text,
-  '{"from":"Propriétaire DENTAL LIGHT","to":"Mak jean","reason":"Correction demandée par la clinique : soin réalisé par Mak jean"}'::jsonb from fix;
+  '{"from":"Propriétaire DENTAL","to":"Mak jean","reason":"Correction demandée par la clinique : soin réalisé par Mak jean"}'::jsonb from fix;
 with fix as (
   update invoices set doctor_id = 'eb3de5e6-1f8a-45c0-91f0-a3cc798c1190'
   where plan_item_id in ('a7b4a312-5bbf-43f7-86e4-a25d3e97f75e', '383ee9c6-7c30-4da0-9f53-1494eeced018')
@@ -18,4 +18,4 @@ with fix as (
   returning id, number)
 insert into audit_logs(clinic_id, user_id, action, table_name, record_id, details)
 select (select clinic_id from users where id = 'eb3de5e6-1f8a-45c0-91f0-a3cc798c1190'), null, 'REATTRIBUTED', 'invoices', id::text,
-  jsonb_build_object('invoice', number, 'from', 'Propriétaire DENTAL LIGHT', 'to', 'Mak jean', 'reason', 'Correction demandée par la clinique : soin réalisé par Mak jean') from fix;
+  jsonb_build_object('invoice', number, 'from', 'Propriétaire DENTAL', 'to', 'Mak jean', 'reason', 'Correction demandée par la clinique : soin réalisé par Mak jean') from fix;

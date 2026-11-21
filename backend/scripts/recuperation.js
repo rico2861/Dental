@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DENTAL LIGHT — RÉCUPÉRATION D'URGENCE EN CONSOLE (méthode 3, dernier recours)
+// DENTAL — RÉCUPÉRATION D'URGENCE EN CONSOLE (méthode 3, dernier recours)
 // À lancer SUR L'ORDINATEUR DU SERVEUR (ou en SSH protégé), serveur ARRÊTÉ. Aucune route Internet.
 //
 //   npm run recuperation                               liste les comptes administrateurs et leur état

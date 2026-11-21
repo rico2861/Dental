@@ -1,4 +1,4 @@
-# Installeur Windows — DENTAL LIGHT
+# Installeur Windows — DENTAL
 
 Produit un **`DentalLight-Setup.exe`** : installation en un clic, démarrage automatique, et ouverture de l'écran d'activation (demande de licence) à la fin.
 
@@ -16,11 +16,11 @@ Le workflow GitHub Actions `.github/workflows/build-windows.yml` (runner **Windo
 Le lien de téléchargement de la vitrine pointe vers `releases/latest`.
 
 ## Ce que fait l'installeur
-- Installe le logiciel dans `Program Files\DENTAL LIGHT` (Node embarqué).
-- Met les **données** dans `C:\ProgramData\DENTAL LIGHT` (base, documents, sauvegardes, `.env`) — dossier inscriptible, **conservé même à la désinstallation** (rien n'est perdu).
+- Installe le logiciel dans `Program Files\DENTAL` (Node embarqué).
+- Met les **données** dans `C:\ProgramData\DENTAL` (base, documents, sauvegardes, `.env`) — dossier inscriptible, **conservé même à la désinstallation** (rien n'est perdu).
 - Crée une tâche planifiée **au démarrage de session** (le serveur se relance tout seul).
 - Ouvre `http://localhost:3000` : si aucune licence, l'**écran d'activation** demande le code de la clinique.
-- Les identifiants du propriétaire (première connexion) sont écrits dans `C:\ProgramData\DENTAL LIGHT\PREMIER-DEMARRAGE.txt`.
+- Les identifiants du propriétaire (première connexion) sont écrits dans `C:\ProgramData\DENTAL\PREMIER-DEMARRAGE.txt`.
 
 ## Fichiers
 - `dental-light.iss` — script Inno Setup

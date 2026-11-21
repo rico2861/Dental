@@ -1,4 +1,4 @@
-// Matrice des rôles et permissions de DENTAL LIGHT.
+// Matrice des rôles et permissions de DENTAL.
 export const ALL = ['view_all_patients','view_assigned_patients','create_patients','edit_patients','view_medical_records','edit_medical_records','view_finances','manage_finances','view_salaries','manage_payroll','manage_inventory','approve_purchases','manage_exchange_rates','manage_users','manage_roles','view_audit_logs','export_reports','manage_appointments','manage_queue','manage_treatment_plans','manage_prostheses','manage_settings']
 export const SENSITIVE = new Set(['view_medical_records','edit_medical_records','view_finances','manage_finances','view_salaries','manage_payroll','approve_purchases','manage_exchange_rates','manage_users','manage_roles','view_audit_logs','manage_settings'])
 const ADMINISH = ALL.filter(p => p !== 'manage_exchange_rates')

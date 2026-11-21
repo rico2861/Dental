@@ -39,14 +39,14 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
   const clinic = async req => (await q('select name,address,phone from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}
   // fiche diagnostique (même présentation que la fiche papier) : remplie pour un patient, ou vierge à imprimer
   app.get('/api/fiche-diagnostique-vierge', need('view_medical_records', 'create_patients'), wrap(async (req, res) => {
-    const cl = await clinic(req); makePdf(res, 'fiche-diagnostique-vierge', doc => diagnosticPdf(doc, { clinic: cl }), { footer: (cl.name || 'DENTAL LIGHT') + '  ·  Fiche diagnostique' }) }))
+    const cl = await clinic(req); makePdf(res, 'fiche-diagnostique-vierge', doc => diagnosticPdf(doc, { clinic: cl }), { footer: (cl.name || 'DENTAL') + '  ·  Fiche diagnostique' }) }))
   app.get('/api/patients/:id/diagnostic', need('view_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Dossier introuvable ou accès refusé')
     const [cl, h, ex, th, doctor] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id]), q('select * from dental_examinations where patient_id=$1 order by examined_at desc limit 1', [p.id]),
       q('select distinct on (tooth_fdi) tooth_fdi,state from tooth_states where patient_id=$1 order by tooth_fdi, recorded_at desc', [p.id]), name(p.primary_doctor_id)])
     await audit(req, 'PATIENT_PDF', 'patients', p.id, { kind: 'fiche diagnostique' })
     makePdf(res, 'fiche-diagnostique-' + p.file_number, doc => diagnosticPdf(doc, { clinic: cl, p, h: openJson(h.rows[0]?.data) ?? {}, exam: openExam(ex.rows[0]), teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), doctor }),
-      { footer: (cl.name || 'DENTAL LIGHT') + '  ·  Fiche diagnostique  ·  Dossier ' + p.file_number + '  ·  Document médical confidentiel' }) }))
+      { footer: (cl.name || 'DENTAL') + '  ·  Fiche diagnostique  ·  Dossier ' + p.file_number + '  ·  Document médical confidentiel' }) }))
   app.get('/api/patients/:id/pdf', need('view_medical_records'), wrap(async (req, res) => {
     const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Dossier introuvable ou accès refusé')
     const [cl, h, ex, th, co, ap, fin, doctor] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id]),
@@ -57,11 +57,11 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     await audit(req, 'PATIENT_PDF', 'patients', p.id)
     const hd = openJson(h.rows[0]?.data) ?? {}, upcoming = ap.rows.filter(a => new Date(a.starts_at) > new Date() && ['planned', 'confirmed'].includes(a.status)).length
     const adv = advice({ h: hd, teeth: th.rows, consults: co.rows, upcoming, exam: openExam(ex.rows[0]) })
-    makePdf(res, `dossier-${p.file_number}`, doc => patientPdf(doc, { clinic: cl, p, doctor, h: hd, exam: openExam(ex.rows[0]), teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), consults: co.rows, appts: ap.rows, finance: fin, advice: adv }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
+    makePdf(res, `dossier-${p.file_number}`, doc => patientPdf(doc, { clinic: cl, p, doctor, h: hd, exam: openExam(ex.rows[0]), teeth: new Map(th.rows.map(t => [t.tooth_fdi, t.state])), consults: co.rows, appts: ap.rows, finance: fin, advice: adv }), { footer: `${cl.name || 'DENTAL'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
   app.get('/api/consultations/:id/pdf', need('view_medical_records'), wrap(async (req, res) => {
     if (!UUID.test(req.params.id)) return fail(res, 404, 'Introuvable')
     const c = (await q("select c.*,u.first_name||' '||u.last_name doctor,pu.first_name||' '||pu.last_name primary_doctor from consultations c join users u on u.id=c.doctor_id left join users pu on pu.id=c.primary_doctor_id where c.id=$1 and c.clinic_id=$2", [req.params.id, req.user.clinic_id])).rows[0]
     const p = c && await access(req, c.patient_id); if (!p) return fail(res, 404, 'Introuvable ou accès refusé')
     const [cl, h] = await Promise.all([clinic(req), q('select data from medical_histories where patient_id=$1', [p.id])]); await audit(req, 'CONSULTATION_PDF', 'consultations', c.id)
-    makePdf(res, `consultation-${p.file_number}-${new Date(c.consulted_at).toISOString().slice(0, 10)}`, doc => consultationPdf(doc, { clinic: cl, p, c, allergies: openJson(h.rows[0]?.data)?.allergies }), { footer: `${cl.name || 'DENTAL LIGHT'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
+    makePdf(res, `consultation-${p.file_number}-${new Date(c.consulted_at).toISOString().slice(0, 10)}`, doc => consultationPdf(doc, { clinic: cl, p, c, allergies: openJson(h.rows[0]?.data)?.allergies }), { footer: `${cl.name || 'DENTAL'}  ·  Dossier ${p.file_number}  ·  confidentiel` }) }))
 }

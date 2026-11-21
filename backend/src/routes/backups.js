@@ -33,9 +33,9 @@ export default function (app, { need, audit, fail, wrap }) {
   app.post('/api/backups/recovery-kit', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire')
     if (!(await bcrypt.compare(req.body.password || '', req.user.password_hash))) return fail(res, 400, 'Mot de passe incorrect')
     const E = k => process.env[k] ? k + '=' + process.env[k] : '# ' + k + '= (non défini)'
-    const txt = ['# ═══ DENTAL LIGHT — KIT DE RÉCUPÉRATION ═══', '# Généré le ' + new Date().toLocaleString('fr-FR', { timeZone: 'America/Port-au-Prince' }) + ' par ' + who(req),
+    const txt = ['# ═══ DENTAL — KIT DE RÉCUPÉRATION ═══', '# Généré le ' + new Date().toLocaleString('fr-FR', { timeZone: 'America/Port-au-Prince' }) + ' par ' + who(req),
       '# CONFIDENTIEL : ce fichier déchiffre les dossiers médicaux. Gardez-le hors de cet ordinateur (clé USB rangée, coffre), jamais par e-mail ni sur un téléphone partagé.',
-      '#', '# En cas de perte de l\'ordinateur : installez DENTAL LIGHT, copiez ces lignes dans backend/.env, démarrez,', '# puis « Sauvegardes → Récupérer depuis Supabase » (ou restaurez une sauvegarde copiée depuis le miroir).', '',
+      '#', '# En cas de perte de l\'ordinateur : installez DENTAL, copiez ces lignes dans backend/.env, démarrez,', '# puis « Sauvegardes → Récupérer depuis Supabase » (ou restaurez une sauvegarde copiée depuis le miroir).', '',
       E('JWT_SECRET'), E('SUPABASE_DB_URL'), E('SUPABASE_SERVICE_KEY'), E('SUPABASE_REGION'), E('OWNER_EMAIL'), ''].join('\r\n')
     kitDownloaded(who(req)); await audit(req, 'RECOVERY_KIT', 'backups', null, {})
     res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="dental-light-kit-recuperation.txt"'); res.setHeader('Cache-Control', 'no-store'); res.send(txt) }))

@@ -1,4 +1,4 @@
--- ═══ DENTAL LIGHT : préparation de Supabase (à exécuter UNE FOIS) ═══
+-- ═══ DENTAL : préparation de Supabase (à exécuter UNE FOIS) ═══
 -- Supabase → SQL Editor → New query → coller ce script → Run.
 -- Crée les tables qui reçoivent la copie de la clinique quand la synchronisation passe par le web (HTTPS, port 443).
 -- Sécurité : Row Level Security activée SANS aucune politique → seules la clé service_role (le serveur de la clinique)
