@@ -12,6 +12,7 @@ import planning from './routes/planning.js'; import intel from './routes/intel.j
 import security, { notify as notifyQ, verifySecondFactor, sendEmailCode } from './routes/security.js'; import clinical2 from './routes/clinical2.js'; import requests from './routes/requests.js'
 import { sealJson, protectExisting } from './lib/protect.js'
 import recovery from './routes/recovery.js'
+import * as license from './lib/license.js'   // porte de licence (ajout — ne modifie aucune gestion)
 // lancé par le service (scripts/service-run.js) : s'arrête si le lanceur disparaît (arrêt du service sous Windows)
 if (process.env.DL_SUPERVISOR_PID) setInterval(() => { try { process.kill(Number(process.env.DL_SUPERVISOR_PID), 0) } catch { process.exit(0) } }, 5000).unref()
 const SECRET = config.secret
@@ -47,6 +48,15 @@ app.use((req, res, next) => {
 app.use((req, res, next) => maintenance.on && req.path.startsWith('/api/') && req.path !== '/api/health' ? res.status(503).json({ error: (maintenance.why || 'Restauration en cours') + ' : réessayez dans un instant', code: 'MAINTENANCE' }) : next())
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next)
 const fail = (res, s, error, code) => res.status(s).json({ error, code })
+
+// ═══ Porte de licence (ajout Phase 3) ═══════════════════════════════════════
+// Routes toujours accessibles (même licence bloquée) pour pouvoir débloquer :
+app.get('/api/license/status', (req, res) => res.json(license.status()))
+app.post('/api/license/activate', wrap(async (req, res) => { try { res.json(await license.activate(req.body || {})) } catch (e) { fail(res, e.http || 400, e.message, e.code) } }))
+app.post('/api/license/key', wrap(async (req, res) => { try { res.json(license.installKey((req.body || {}).token)) } catch (e) { fail(res, 400, e.message, e.code) } }))
+app.post('/api/license/check', wrap(async (req, res) => { const r = await license.checkRemote(); res.json({ ...r, ...license.status() }) }))
+// Puis la porte : tout le reste de /api/* est bloqué si la licence n'est pas valable.
+app.use(license.licenseGate)
 
 const notify = (c, k, t, x, perm, uid) => notifyQ(q, c, k, t, x, perm, uid)
 const adminish = u => u.role === 'OWNER' || u.role.startsWith('ADMIN')
@@ -347,6 +357,7 @@ const server = app.listen(config.port, process.env.HOST || '0.0.0.0', () => { se
 server.on('error', e => { if (e.code === 'EADDRINUSE') { console.error(`\n✖ Le port ${config.port} est déjà utilisé.\n  DENTAL LIGHT tourne probablement déjà dans une autre fenêtre : ouvrez http://localhost:${config.port}\n  Pour le relancer ici, fermez d'abord l'autre fenêtre (ou Ctrl+C dedans), puis refaites : npm start\n`); process.exit(1) } throw e })
 if (process.env.NODE_ENV !== 'test') { startScheduler(); startPlus() }   // sauvegarde automatique quotidienne
 if (process.env.NODE_ENV !== 'test' || process.env.CLOUD_TEST) startCloud()   // sauvegarde en ligne : détection d'Internet et envoi automatique vers Supabase
+if (process.env.NODE_ENV !== 'test') license.startLicense()   // contrôle en ligne de révocation / prolongation (si SAAS_URL)
 if (process.env.NODE_ENV !== 'test') startIntel()   // moteur d'intelligence opérationnelle (arrière-plan, toutes les 30 minutes)
 if (process.env.NODE_ENV !== 'test') startAlerts()   // notifications automatiques (toutes les 30 minutes)
 let stopping = false

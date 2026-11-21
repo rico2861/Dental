@@ -15,8 +15,25 @@ import { BDIR, readJson, journal } from './backup-restore.js'
 import { listBackups, createBackup } from './backup.js'
 import { q, pool } from '../db/pool.js'
 import { bumpEpoch } from './backup-plus.js'
+import { clinicSchema, status as licenseStatus, fingerprint as hostFingerprint } from './license.js'
+import { sealFile, openFile } from './protect.js'   // chiffrement AES-256-GCM des archives envoyées à Supabase
 
-const SCHEMA = 'dental_light', PART = 8 * 1024 * 1024
+// Schéma Supabase propre à CETTE clinique (isolation) : clinic_<id>, sinon dental_light.
+const S = () => clinicSchema()
+const PART = 8 * 1024 * 1024
+
+// Remontée (non bloquante) de l'état d'une sauvegarde vers la console SaaS.
+const SAAS_URL = (process.env.SAAS_URL || '').replace(/\/+$/, '')
+async function reportBackup(meta, verified) {
+  if (!SAAS_URL) return
+  try {
+    const cid = licenseStatus().clinic_id; if (!cid) return
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 8000)
+    await fetch(SAAS_URL + '/api/backups/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+      body: JSON.stringify({ clinic_id: cid, fingerprint: hostFingerprint(), size_bytes: meta.size, sha256: meta.sha256, verified, location: 'supabase:' + S() + '.dl_backups' }) }).catch(() => {})
+    clearTimeout(t)
+  } catch { /* silencieux : la sauvegarde locale a réussi de toute façon */ }
+}
 const STATE = () => path.join(BDIR(), 'cloud-etat.json'), CACHE = () => path.join(BDIR(), 'cloud-sync.json')
 const sha = b => crypto.createHash('sha256').update(b).digest('hex')
 const writeJson = (f, o) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(o), { mode: 0o600 }) }
@@ -25,7 +42,7 @@ const env = () => ({ url: process.env.SUPABASE_DB_URL || '', enabled: (process.e
 export const cloudState = () => ({ online: null, last_check: null, last_sync: null, last_error: null, hint: null, uploading: null, via: null, tables: null, rows_sent: null, ...readJson(STATE(), {}) })
 const setState = p => writeJson(STATE(), { ...cloudState(), ...p })
 export const configured = () => !!env().url
-export const publicCloud = () => { const e = env(); let host = ''; try { host = new URL(e.url).hostname } catch {} return { configured: !!e.url, enabled: e.enabled, host, keep: e.keep, fresh_hours: e.fresh_hours, schema: SCHEMA, web: httpsConfigured(), source: '.env (SUPABASE_DB_URL)' } }
+export const publicCloud = () => { const e = env(); let host = ''; try { host = new URL(e.url).hostname } catch {} return { configured: !!e.url, enabled: e.enabled, host, keep: e.keep, fresh_hours: e.fresh_hours, schema: S(), web: httpsConfigured(), source: '.env (SUPABASE_DB_URL)' } }
 
 // ── connexion : directe, puis poolers Supabase (IPv4) ; l'adresse qui fonctionne est retenue ──
 const REGIONS = ['us-west-2', 'us-east-1', 'us-east-2', 'us-west-1', 'ca-central-1', 'sa-east-1', 'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1', 'eu-central-2', 'eu-north-1', 'ap-south-1', 'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1', 'ap-northeast-2']
@@ -71,35 +88,35 @@ async function localTables() {
     out.push({ name, cols, pk }) }
   return out }
 async function ensureSchema(r, tables) {
-  await r.query(`create schema if not exists ${SCHEMA}`)
+  await r.query(`create schema if not exists ${S()}`)
   for (const t of tables) {
-    await r.query(`create table if not exists ${SCHEMA}.${qi(t.name)} (${t.cols.map(c => `${qi(c.col)} ${c.typ}`).join(', ')}${t.pk.length ? `, primary key (${t.pk.map(qi).join(', ')})` : ''})`)
-    for (const c of t.cols) await r.query(`alter table ${SCHEMA}.${qi(t.name)} add column if not exists ${qi(c.col)} ${c.typ}`) }
-  await r.query(`create table if not exists ${SCHEMA}.dl_files (path text primary key, size bigint, sha256 text, data bytea, updated_at timestamptz default now())`)
-  await r.query(`create table if not exists ${SCHEMA}.dl_backups (id text not null, part int not null, data bytea not null, meta jsonb, uploaded_at timestamptz default now(), primary key (id, part))`)
-  await r.query(`create table if not exists ${SCHEMA}.dl_sync (clinic text primary key, last_sync timestamptz, tables int, rows bigint, app_version text)`) }
+    await r.query(`create table if not exists ${S()}.${qi(t.name)} (${t.cols.map(c => `${qi(c.col)} ${c.typ}`).join(', ')}${t.pk.length ? `, primary key (${t.pk.map(qi).join(', ')})` : ''})`)
+    for (const c of t.cols) await r.query(`alter table ${S()}.${qi(t.name)} add column if not exists ${qi(c.col)} ${c.typ}`) }
+  await r.query(`create table if not exists ${S()}.dl_files (path text primary key, size bigint, sha256 text, data bytea, updated_at timestamptz default now())`)
+  await r.query(`create table if not exists ${S()}.dl_backups (id text not null, part int not null, data bytea not null, meta jsonb, uploaded_at timestamptz default now(), primary key (id, part))`)
+  await r.query(`create table if not exists ${S()}.dl_sync (clinic text primary key, last_sync timestamptz, tables int, rows bigint, app_version text)`) }
 
 // ── données : seules les lignes nouvelles ou modifiées sont envoyées (empreinte par ligne, gardée localement) ──
 const val = v => v === null || v === undefined ? null : Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v) : v instanceof Date ? v.toISOString() : Array.isArray(v) ? v : typeof v === 'object' ? JSON.stringify(v) : v
 async function syncTable(r, t, cache) {
   const rows = (await q(`select * from ${qi(t.name)}`)).rows, key = row => t.pk.length ? t.pk.map(k => String(row[k])).join('\u0001') : sha(JSON.stringify(row))
   let prev = cache[t.name] || {}; const next = {}, changed = []
-  if (Object.keys(prev).length && t.pk.length && !(await r.query(`select exists(select 1 from ${SCHEMA}.${qi(t.name)}) e`)).rows[0].e) prev = {}   // table vidée côté Supabase : tout renvoyer
+  if (Object.keys(prev).length && t.pk.length && !(await r.query(`select exists(select 1 from ${S()}.${qi(t.name)}) e`)).rows[0].e) prev = {}   // table vidée côté Supabase : tout renvoyer
   for (const row of rows) { const k = key(row), h = sha(JSON.stringify(row, (_, v) => typeof v === 'bigint' ? v.toString() : v)); next[k] = h; if (prev[k] !== h) changed.push(row) }
   const removed = Object.keys(prev).filter(k => !(k in next))
   const cols = t.cols.map(c => c.col), casts = t.cols.map(c => c.typ)
   for (let i = 0; i < changed.length; i += 200) { const chunk = changed.slice(i, i + 200), params = [], tuples = chunk.map(row => '(' + cols.map((c, j) => { params.push(/^jsonb?$/.test(casts[j]) ? (row[c] == null ? null : JSON.stringify(row[c])) : val(row[c])); return `$${params.length}::${casts[j]}` }).join(',') + ')')
     const upd = cols.filter(c => !t.pk.includes(c)).map(c => `${qi(c)}=excluded.${qi(c)}`).join(', ')
-    await r.query(`insert into ${SCHEMA}.${qi(t.name)} (${cols.map(qi).join(',')}) values ${tuples.join(',')}${t.pk.length ? ` on conflict (${t.pk.map(qi).join(',')}) do ${upd ? 'update set ' + upd : 'nothing'}` : ''}`, params) }
+    await r.query(`insert into ${S()}.${qi(t.name)} (${cols.map(qi).join(',')}) values ${tuples.join(',')}${t.pk.length ? ` on conflict (${t.pk.map(qi).join(',')}) do ${upd ? 'update set ' + upd : 'nothing'}` : ''}`, params) }
   if (t.pk.length && removed.length) for (let i = 0; i < removed.length; i += 200) { const ks = removed.slice(i, i + 200).map(k => k.split('\u0001')), params = []
-    await r.query(`delete from ${SCHEMA}.${qi(t.name)} where (${t.pk.map(qi).join(',')}) in (${ks.map(k => '(' + k.map((v, j) => { params.push(v); return `$${params.length}::${t.cols.find(c => c.col === t.pk[j]).typ}` }).join(',') + ')').join(',')})`, params) }
+    await r.query(`delete from ${S()}.${qi(t.name)} where (${t.pk.map(qi).join(',')}) in (${ks.map(k => '(' + k.map((v, j) => { params.push(v); return `$${params.length}::${t.cols.find(c => c.col === t.pk[j]).typ}` }).join(',') + ')').join(',')})`, params) }
   cache[t.name] = next; return changed.length + removed.length }
 async function syncFiles(r, cache) { const root = config.storageDir, prev = cache.__files || {}, next = {}; let n = 0
   const walk = d => fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]) : []
   for (const f of walk(root)) { const rel = path.relative(root, f).split(path.sep).join('/'), st = fs.statSync(f), tag = st.size + ':' + st.mtimeMs; next[rel] = tag; if (prev[rel] === tag) continue
-    const buf = fs.readFileSync(f); await r.query(`insert into ${SCHEMA}.dl_files (path,size,sha256,data,updated_at) values ($1,$2,$3,$4,now()) on conflict (path) do update set size=excluded.size, sha256=excluded.sha256, data=excluded.data, updated_at=now()`, [rel, buf.length, sha(buf), buf]); n++ }
+    const buf = fs.readFileSync(f); await r.query(`insert into ${S()}.dl_files (path,size,sha256,data,updated_at) values ($1,$2,$3,$4,now()) on conflict (path) do update set size=excluded.size, sha256=excluded.sha256, data=excluded.data, updated_at=now()`, [rel, buf.length, sha(buf), buf]); n++ }
   for (const [name, p] of confFiles()) { const buf = fs.readFileSync(p), h = sha(buf), rel = '__config/' + name; next[rel] = h; if (prev[rel] === h) continue
-    await r.query(`insert into ${SCHEMA}.dl_files (path,size,sha256,data,updated_at) values ($1,$2,$3,$4,now()) on conflict (path) do update set size=excluded.size, sha256=excluded.sha256, data=excluded.data, updated_at=now()`, [rel, buf.length, h, buf]); n++ }
+    await r.query(`insert into ${S()}.dl_files (path,size,sha256,data,updated_at) values ($1,$2,$3,$4,now()) on conflict (path) do update set size=excluded.size, sha256=excluded.sha256, data=excluded.data, updated_at=now()`, [rel, buf.length, h, buf]); n++ }
   cache.__files = next; return n }
 
 // ── sauvegardes complètes : archive (base + documents) découpée en parties de 8 Mo ──
@@ -108,22 +125,23 @@ function pack(dir) { const files = [], walk = (p, rel) => { for (const e of fs.r
   return Buffer.concat(chunks) }
 function unpack(buf, dir) { let o = 0; while (o < buf.length) { const nl = buf.readUInt32BE(o), size = buf.readUInt32BE(o + 4) * 2 ** 32 + buf.readUInt32BE(o + 8); o += 12; const name = buf.subarray(o, o + nl).toString(); o += nl
     const target = path.resolve(dir, name); if (!target.startsWith(path.resolve(dir) + path.sep)) throw new Error('Archive invalide'); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, buf.subarray(o, o + size)); o += size } }
-async function uploadBackup(r, b) { const blob = pack(path.join(BDIR(), b.id)), parts = Math.max(1, Math.ceil(blob.length / PART)), meta = { id: b.id, seq: b.seq, kind: b.kind, created_at: b.created_at, counts: b.counts, files: b.files, parts, size: blob.length, sha256: sha(blob) }
+async function uploadBackup(r, b) { const blob = sealFile(pack(path.join(BDIR(), b.id))), parts = Math.max(1, Math.ceil(blob.length / PART)), meta = { id: b.id, seq: b.seq, kind: b.kind, created_at: b.created_at, counts: b.counts, files: b.files, parts, size: blob.length, sha256: sha(blob) }
   setState({ uploading: { id: b.id, part: 0, parts } })
-  for (let i = 0; i < parts; i++) { await r.query(`insert into ${SCHEMA}.dl_backups (id,part,data,meta) values ($1,$2,$3,$4) on conflict (id,part) do update set data=excluded.data, meta=excluded.meta`, [b.id, i, blob.subarray(i * PART, (i + 1) * PART), i === parts - 1 ? JSON.stringify(meta) : null]); setState({ uploading: { id: b.id, part: i + 1, parts } }) }
-  const chk = (await r.query(`select count(*)::int n from ${SCHEMA}.dl_backups where id=$1`, [b.id])).rows[0].n; if (chk !== parts) throw new Error('Vérification de la copie en ligne échouée')
+  for (let i = 0; i < parts; i++) { await r.query(`insert into ${S()}.dl_backups (id,part,data,meta) values ($1,$2,$3,$4) on conflict (id,part) do update set data=excluded.data, meta=excluded.meta`, [b.id, i, blob.subarray(i * PART, (i + 1) * PART), i === parts - 1 ? JSON.stringify(meta) : null]); setState({ uploading: { id: b.id, part: i + 1, parts } }) }
+  const chk = (await r.query(`select count(*)::int n from ${S()}.dl_backups where id=$1`, [b.id])).rows[0].n; if (chk !== parts) throw new Error('Vérification de la copie en ligne échouée')
   const mf = path.join(BDIR(), b.id, 'manifest.json'), man = readJson(mf, {}); man.cloud = { at: new Date().toISOString(), parts, size: blob.length, sha256: meta.sha256, target: 'supabase' }; fs.writeFileSync(mf, JSON.stringify(man, null, 1))
-  journal({ op: 'cloud_upload', id: b.id, ok: true, size: blob.length, parts }) }
-export async function listCloud() { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 }); if (webFirst()) return listCloudWeb(); let r; try { r = await connect() } catch (e) { if (httpsConfigured()) { notePgFail(); return listCloudWeb() } throw e } try { return (await r.query(`select meta, uploaded_at from ${SCHEMA}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => ({ ...(typeof x.meta === 'string' ? JSON.parse(x.meta) : x.meta), uploaded_at: x.uploaded_at })) } catch (e) { if (/does not exist/.test(e.message)) return []; throw e } finally { await r.end() } }
+  journal({ op: 'cloud_upload', id: b.id, ok: true, size: blob.length, parts })
+  reportBackup(meta, true).catch(() => {}) }   // remontée vers la console (si SAAS_URL)
+export async function listCloud() { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 }); if (webFirst()) return listCloudWeb(); let r; try { r = await connect() } catch (e) { if (httpsConfigured()) { notePgFail(); return listCloudWeb() } throw e } try { return (await r.query(`select meta, uploaded_at from ${S()}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => ({ ...(typeof x.meta === 'string' ? JSON.parse(x.meta) : x.meta), uploaded_at: x.uploaded_at })) } catch (e) { if (/does not exist/.test(e.message)) return []; throw e } finally { await r.end() } }
 export async function importCloud(id) { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 });
   if (!/^[\w.:-]+$/.test(id)) throw new Error('Copie invalide'); if (listBackups().some(b => b.id === id)) throw new Error('Cette sauvegarde existe déjà sur cet ordinateur')
   let meta, blob, r = null; if (!webFirst()) { try { r = await connect() } catch (e) { if (!httpsConfigured()) throw e; notePgFail() } }
-  if (r) { let rows; try { rows = (await r.query(`select part, data, meta from ${SCHEMA}.dl_backups where id=$1 order by part`, [id])).rows } finally { await r.end() }
+  if (r) { let rows; try { rows = (await r.query(`select part, data, meta from ${S()}.dl_backups where id=$1 order by part`, [id])).rows } finally { await r.end() }
     const metaRow = rows.find(x => x.meta); meta = metaRow && (typeof metaRow.meta === 'string' ? JSON.parse(metaRow.meta) : metaRow.meta); if (!meta || rows.length !== meta.parts) throw new Error('Copie en ligne incomplète')
     blob = Buffer.concat(rows.map(x => Buffer.from(x.data))) } else ({ meta, blob } = await fetchBackupWeb(id))
   if (blob.length !== meta.size && meta.size) throw new Error('Copie en ligne incomplète'); if (sha(blob) !== meta.sha256) throw new Error('Copie en ligne altérée (empreinte différente)')
   const dir = path.join(BDIR(), id), tmp = dir + '.import'; fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true })
-  try { unpack(blob, tmp); const man = readJson(path.join(tmp, 'manifest.json'), null); if (!man?.verified || sha(fs.readFileSync(path.join(tmp, 'db.tar.gz'))) !== man.db_sha256) throw new Error('Contenu de la copie invalide')
+  try { unpack(openFile(blob), tmp); const man = readJson(path.join(tmp, 'manifest.json'), null); if (!man?.verified || sha(fs.readFileSync(path.join(tmp, 'db.tar.gz'))) !== man.db_sha256) throw new Error('Contenu de la copie invalide')
     man.cloud = { ...(man.cloud || {}), imported: new Date().toISOString() }; fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(man, null, 1)); fs.renameSync(tmp, dir) }
   catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw e }
   journal({ op: 'cloud_import', id, ok: true }); return { id, counts: meta.counts } }
@@ -171,7 +189,7 @@ async function syncFilesWeb(cache) { const root = config.storageDir, prev = cach
     await putObj('fichiers/' + rel, fs.readFileSync(f)); n++ }
   for (const [name, p] of confFiles()) { const buf = fs.readFileSync(p), h = sha(buf), rel = '__config/' + name; next[rel] = h; if (prev[rel] === h) continue; await putObj('config/' + name, buf); n++ }
   cache.__files = next; return n }
-async function uploadBackupWeb(b) { const blob = pack(path.join(BDIR(), b.id)), parts = Math.max(1, Math.ceil(blob.length / PART)), meta = { id: b.id, seq: b.seq, kind: b.kind, created_at: b.created_at, counts: b.counts, files: b.files, parts, size: blob.length, sha256: sha(blob) }
+async function uploadBackupWeb(b) { const blob = sealFile(pack(path.join(BDIR(), b.id))), parts = Math.max(1, Math.ceil(blob.length / PART)), meta = { id: b.id, seq: b.seq, kind: b.kind, created_at: b.created_at, counts: b.counts, files: b.files, parts, size: blob.length, sha256: sha(blob) }
   setState({ uploading: { id: b.id, part: 0, parts } })
   for (let i = 0; i < parts; i++) { await putObj('sauvegardes/' + b.id + '/' + String(i).padStart(4, '0'), blob.subarray(i * PART, (i + 1) * PART)); setState({ uploading: { id: b.id, part: i + 1, parts } }) }
   // vérification : toutes les parties présentes en ligne, avec la bonne taille totale
@@ -237,8 +255,8 @@ async function doSync() {
     const files = await syncFiles(r, cache); writeJson(CACHE(), cache)
     const sent = []; for (const b of listBackups().filter(b => b.verified && !b.cloud).slice(0, 3)) { await uploadBackup(r, b); sent.push(b.id) }
     // conservation en ligne : les N sauvegardes les plus récentes
-    const ids = (await r.query(`select id from ${SCHEMA}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => x.id); for (const id of ids.slice(e.keep)) await r.query(`delete from ${SCHEMA}.dl_backups where id=$1`, [id])
-    await r.query(`insert into ${SCHEMA}.dl_sync (clinic,last_sync,tables,rows) values ('principal',now(),$1,$2) on conflict (clinic) do update set last_sync=now(), tables=$1, rows=$2`, [tables.length, Object.values(cache).reduce((a, m) => a + Object.keys(m || {}).length, 0)])
+    const ids = (await r.query(`select id from ${S()}.dl_backups where meta is not null order by meta->>'created_at' desc`)).rows.map(x => x.id); for (const id of ids.slice(e.keep)) await r.query(`delete from ${S()}.dl_backups where id=$1`, [id])
+    await r.query(`insert into ${S()}.dl_sync (clinic,last_sync,tables,rows) values ('principal',now(),$1,$2) on conflict (clinic) do update set last_sync=now(), tables=$1, rows=$2`, [tables.length, Object.values(cache).reduce((a, m) => a + Object.keys(m || {}).length, 0)])
     setState({ last_sync: new Date().toISOString(), last_error: null, tables: tables.length, rows_sent: rows, files_sent: files })
     if (rows || files || sent.length) journal({ op: 'cloud_sync', ok: true, rows, files, backups: sent.length })
     return { sent, rows, files, tables: tables.length, via: r.via }
@@ -251,13 +269,13 @@ async function webList(prefix) { const out = []; const items = await rest('POST'
   for (const it of items) { if (it.id === null || !it.metadata) out.push(...await webList(prefix + it.name + '/')); else out.push(prefix + it.name) } return out }
 async function remoteCounts(r) {
   if (!r) return Object.fromEntries(((await rest('GET', '/rest/v1/dl_resume?select=table_origine,lignes')) || []).map(x => [x.table_origine, Number(x.lignes)]))
-  const ex = new Set((await r.query("select table_name from information_schema.tables where table_schema=$1", [SCHEMA])).rows.map(x => x.table_name)), out = {}
-  for (const t of await localTables()) if (ex.has(t.name)) out[t.name] = Number((await r.query('select count(*)::int n from ' + SCHEMA + '.' + qi(t.name))).rows[0].n)
+  const ex = new Set((await r.query("select table_name from information_schema.tables where table_schema=$1", [S()])).rows.map(x => x.table_name)), out = {}
+  for (const t of await localTables()) if (ex.has(t.name)) out[t.name] = Number((await r.query('select count(*)::int n from ' + S() + '.' + qi(t.name))).rows[0].n)
   return out }
 // comparaison local / en ligne, table par table (rien n'est modifié)
 export async function previewCloud() { if (!configured()) throw Object.assign(new Error('Copie en ligne non configurée : ajoutez SUPABASE_DB_URL dans backend/.env puis redémarrez'), { status: 400 });
   const r = await openRemote(); try {
-    const remote = await remoteCounts(r), tables = await localTables(), last = r ? (await r.query('select last_sync from ' + SCHEMA + '.dl_sync limit 1').catch(() => ({ rows: [] }))).rows[0]?.last_sync : ((await rest('GET', '/rest/v1/dl_sync?select=last_sync&limit=1')) || [])[0]?.last_sync
+    const remote = await remoteCounts(r), tables = await localTables(), last = r ? (await r.query('select last_sync from ' + S() + '.dl_sync limit 1').catch(() => ({ rows: [] }))).rows[0]?.last_sync : ((await rest('GET', '/rest/v1/dl_sync?select=last_sync&limit=1')) || [])[0]?.last_sync
     const rows = []; for (const t of tables) { if (NO_RESTORE.has(t.name)) continue; rows.push({ table: t.name, local: Number((await q('select count(*)::int n from ' + qi(t.name))).rows[0].n), cloud: remote[t.name] || 0 }) }
     return { via: r ? r.via : { mode: 'https', label: 'HTTPS (port 443)' }, last_sync: last || null, tables: rows, total_local: rows.reduce((a, x) => a + x.local, 0), total_cloud: rows.reduce((a, x) => a + x.cloud, 0) }
   } finally { if (r) await r.end().catch(() => {}) } }
@@ -271,9 +289,9 @@ export async function pullCloud({ by } = {}) { if (!configured()) throw Object.a
     // 1. lecture complète de la copie en ligne (rien n'est encore modifié ici)
     const r = await openRemote()
     try {
-      if (r) { const ex = new Set((await r.query("select table_name from information_schema.tables where table_schema=$1", [SCHEMA])).rows.map(x => x.table_name)); if (!ex.size) throw new Error('Aucune donnée en ligne à récupérer')
-        for (const t of tables) if (ex.has(t.name)) data[t.name] = (await r.query('select row_to_json(x) j from ' + SCHEMA + '.' + qi(t.name) + ' x')).rows.map(row => typeof row.j === 'string' ? JSON.parse(row.j) : row.j)   // dates, montants et binaires gardés au format texte exact
-        for (const x of (await r.query('select path, data from ' + SCHEMA + '.dl_files')).rows) files.push([x.path, Buffer.from(x.data)]) }
+      if (r) { const ex = new Set((await r.query("select table_name from information_schema.tables where table_schema=$1", [S()])).rows.map(x => x.table_name)); if (!ex.size) throw new Error('Aucune donnée en ligne à récupérer')
+        for (const t of tables) if (ex.has(t.name)) data[t.name] = (await r.query('select row_to_json(x) j from ' + S() + '.' + qi(t.name) + ' x')).rows.map(row => typeof row.j === 'string' ? JSON.parse(row.j) : row.j)   // dates, montants et binaires gardés au format texte exact
+        for (const x of (await r.query('select path, data from ' + S() + '.dl_files')).rows) files.push([x.path, Buffer.from(x.data)]) }
       else { for (const t of tables) { const all = []; for (let o = 0; ; o += 1000) { const page = await rest('GET', '/rest/v1/dl_rows?tbl=eq.' + encodeURIComponent(t.name) + '&select=data&order=pk&limit=1000&offset=' + o) || []; all.push(...page.map(x => x.data)); if (page.length < 1000) break } if (all.length) data[t.name] = all }
         for (const p of await webList('fichiers/')) files.push([p.slice('fichiers/'.length), await rest('GET', obj(p))])
         for (const p of await webList('config/')) files.push(['__config/' + p.slice('config/'.length), await rest('GET', obj(p))]) }
