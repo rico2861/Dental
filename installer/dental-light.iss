@@ -15,7 +15,7 @@ DefaultDirName={autopf}\DENTAL
 DefaultGroupName=DENTAL
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=DentalLight-Setup
+OutputBaseFilename=Dental-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -34,16 +34,17 @@ Source: "..\db\*"; DestDir: "{app}\db"; Flags: recursesubdirs ignoreversion crea
 Source: "node\node.exe"; DestDir: "{app}\node"; Flags: ignoreversion
 Source: "launch.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "start-hidden.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "open-ui.vbs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; Dossier des données, INSCRIPTIBLE par les utilisateurs (base, documents, sauvegardes, config)
 Name: "{commonappdata}\DENTAL"; Permissions: users-modify
 
 [Icons]
-Name: "{group}\DENTAL"; Filename: "http://localhost:3000"
+Name: "{group}\DENTAL"; Filename: "wscript.exe"; Parameters: """{app}\open-ui.vbs"""; WorkingDir: "{app}"; Comment: "Ouvrir DENTAL"
 Name: "{group}\Démarrer le serveur"; Filename: "{app}\start-hidden.vbs"
 Name: "{group}\Désinstaller DENTAL"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\DENTAL"; Filename: "http://localhost:3000"
+Name: "{commondesktop}\DENTAL"; Filename: "wscript.exe"; Parameters: """{app}\open-ui.vbs"""; WorkingDir: "{app}"; Comment: "Ouvrir DENTAL"
 
 [Run]
 ; Démarrage automatique à l'ouverture de session (tâche planifiée)
@@ -51,7 +52,7 @@ Filename: "schtasks"; Parameters: "/Create /F /SC ONLOGON /RL HIGHEST /TN ""DENT
 ; Démarrer maintenant
 Filename: "wscript.exe"; Parameters: """{app}\start-hidden.vbs"""; Flags: runhidden nowait
 ; Ouvrir l'écran d'activation (demande de la licence) après l'installation
-Filename: "http://localhost:3000"; Description: "Ouvrir DENTAL et activer la licence"; Flags: shellexec postinstall nowait
+Filename: "wscript.exe"; Parameters: """{app}\open-ui.vbs"""; Description: "Ouvrir DENTAL et activer la licence"; Flags: postinstall nowait
 
 [UninstallRun]
 Filename: "schtasks"; Parameters: "/Delete /F /TN ""DENTAL"""; Flags: runhidden

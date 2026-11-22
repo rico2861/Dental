@@ -47,3 +47,13 @@ if (hosted) {
   if (/^JWT_SECRET=(remplacez|\s*$)/m.test(t)) { fs.writeFileSync(envp, t.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=' + secret())); console.log('JWT_SECRET généré dans .env') }
   if (!/^REQUIRE_2FA=/m.test(t)) { fs.appendFileSync(envp, '\n# Double authentification obligatoire (propriétaire/admins) : false = désactivée, true = imposée\nREQUIRE_2FA=false\n'); console.log('REQUIRE_2FA=false ajouté à .env (2FA désactivée)') }
 }
+
+// Garantit l'URL du backend SaaS (activation OTP en ligne) — jamais à saisir à la main.
+if (!hosted && fs.existsSync(envp)) {
+  const DEFAULT_SAAS_URL = (process.env.SAAS_URL || 'https://backenddental.onrender.com').trim()
+  let t = fs.readFileSync(envp, 'utf8')
+  const m = t.match(/^SAAS_URL=([^\n]*)$/m)
+  const val = m ? m[1].split('#')[0].trim() : null       // valeur réelle (avant un éventuel commentaire)
+  if (m && !val) { fs.writeFileSync(envp, t.replace(/^SAAS_URL=[^\n]*$/m, 'SAAS_URL=' + DEFAULT_SAAS_URL)); console.log('SAAS_URL réglé dans .env') }
+  else if (!m) { fs.appendFileSync(envp, '\nSAAS_URL=' + DEFAULT_SAAS_URL + '\n'); console.log('SAAS_URL ajouté au .env') }
+}
