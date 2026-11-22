@@ -53,6 +53,8 @@ const fail = (res, s, error, code) => res.status(s).json({ error, code })
 // Routes toujours accessibles (même licence bloquée) pour pouvoir débloquer :
 app.get('/api/license/status', (req, res) => res.json(license.status()))
 app.post('/api/license/activate', wrap(async (req, res) => { try { res.json(await license.activate(req.body || {})) } catch (e) { fail(res, e.http || 400, e.message, e.code) } }))
+app.post('/api/license/request-otp', wrap(async (req, res) => { try { res.json(await license.requestOtp(req.body || {})) } catch (e) { fail(res, e.http || 400, e.message, e.code) } }))
+app.post('/api/license/verify-otp', wrap(async (req, res) => { try { res.json(await license.activateWithOtp(req.body || {})) } catch (e) { fail(res, e.http || 400, e.message, e.code) } }))
 app.post('/api/license/key', wrap(async (req, res) => { try { res.json(license.installKey((req.body || {}).token)) } catch (e) { fail(res, 400, e.message, e.code) } }))
 app.post('/api/license/check', wrap(async (req, res) => { const r = await license.checkRemote(); res.json({ ...r, ...license.status() }) }))
 // Puis la porte : tout le reste de /api/* est bloqué si la licence n'est pas valable.

@@ -62,7 +62,7 @@ export function status() {
     reason: local.reason || remote.reason,
     remote_checked_at: remote.checkedAt || null,
     fingerprint: fingerprint(),
-    brand: { color: brand.color || null, name: brand.name || p.clinic || 'DENTAL', logo: brand.logo || null }
+    brand: { color: brand.color || null, name: brand.name || p.clinic || 'DENTAL', logo: brand.logo || null, legal_name: brand.legal_name || null, email: brand.email || null, phone: brand.phone || null, city: brand.city || null, address: brand.address || null }
   }
 }
 
@@ -95,13 +95,31 @@ async function post(pathname, body) {
 
 // ─── Activation en ligne d'un hôte (consomme un siège côté serveur) ──────────
 // Le serveur renvoie { token, brand? }. Nécessite Internet (une seule fois).
-export async function activate({ code, email } = {}) {
-  const j = await post('/api/activate', { code, email, fingerprint: fingerprint(), hostname: os.hostname(), app_version: process.env.npm_package_version || '' })
+export async function activate({ key, code, email } = {}) {
+  const j = await post('/api/activate', { key, code, email, fingerprint: fingerprint(), hostname: os.hostname(), app_version: process.env.npm_package_version || '' })
   if (!j.token) throw Object.assign(new Error('Réponse du serveur sans clé'), { code: 'SAAS_ERROR' })
   installKey(j.token)
   if (j.brand) writeJson(BRAND_FILE(), j.brand)
   return status()
 }
+
+// ─── Connexion par OTP : étape 1 — envoyer un code à l'e-mail d'inscription ──
+export async function requestOtp({ key } = {}) {
+  const j = await post('/api/activate/request-otp', { key: String(key || '').trim(), fingerprint: fingerprint(), hostname: os.hostname() })
+  return j   // { otp_sent, email (masqué), expires_in }
+}
+
+// ─── Connexion par OTP : étape 2 — vérifier le code puis activer ─────────────
+export async function activateWithOtp({ key, otp } = {}) {
+  const j = await post('/api/activate/verify-otp', { key: String(key || '').trim(), otp: String(otp || '').trim(), fingerprint: fingerprint(), hostname: os.hostname(), app_version: process.env.npm_package_version || '' })
+  if (!j.token) throw Object.assign(new Error('Réponse du serveur sans clé'), { code: 'SAAS_ERROR' })
+  installKey(j.token)
+  if (j.brand) writeJson(BRAND_FILE(), j.brand)
+  return status()
+}
+
+// Profil complet de la clinique (nom, email, adresse, logo, couleur) pour l'app.
+export function brandProfile() { return readJson(BRAND_FILE(), {}) }
 
 // ─── Contrôle en ligne : révocation + prolongation + personnalisation ────────
 export async function checkRemote() {
