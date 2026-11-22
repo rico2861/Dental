@@ -29,7 +29,15 @@ export const validAmounts = ({ amount, discount, paid }) => {
   if (p > a - d) return 'Le montant payé dépasse le total à payer'
   return null }
 export async function billService(c, { clinicId, patientId, doctorId, userId, description, amount, discount, paid, method, reference = null, consultationId = null, planId = null, planItemId = null }) {
-  const a = c100(amount), d = c100(discount), p = c100(paid), total = a - d
+  const a = c100(amount)
+  let d = c100(discount)
+  // Remise par patient : si aucune remise explicite n'est saisie, appliquer la remise
+  // par défaut du patient (pourcentage) à TOUS ses actes.
+  if ((discount === undefined || discount === null || discount === '') && patientId) {
+    const pct = Number((await c.query('select discount_percent from patients where id=$1', [patientId])).rows[0]?.discount_percent || 0)
+    if (pct > 0) d = Math.min(a, Math.round(a * pct / 100))
+  }
+  const p = c100(paid), total = a - d
   if (a <= 0) return null
   const seq = (await c.query("select nextval('invoice_seq') n")).rows[0].n, number = `FAC-${new Date().getFullYear()}-${String(seq).padStart(5, '0')}`
   const { rows: [inv] } = await c.query(`insert into invoices(clinic_id,kind,number,patient_id,currency,subtotal,discount,total,created_by,doctor_id,consultation_id,plan_id,plan_item_id)

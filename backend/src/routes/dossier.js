@@ -27,6 +27,7 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     if ('birth_date' in b) add('birth_date', /^\d{4}-\d{2}-\d{2}$/.test(b.birth_date || '') ? b.birth_date : null)
     if ('sex' in b) add('sex', ['M', 'F'].includes(b.sex) ? b.sex : null)
     if ('children_count' in b) add('children_count', b.children_count === '' || b.children_count == null ? null : Math.min(30, Math.max(0, parseInt(b.children_count) || 0)))
+    if ('discount_percent' in b) add('discount_percent', b.discount_percent === '' || b.discount_percent == null ? 0 : Math.min(100, Math.max(0, Math.round((parseFloat(String(b.discount_percent).replace(',', '.')) || 0) * 100) / 100)))
     if (!sets.length) return fail(res, 400, 'Rien à modifier')
     await q(`update patients set ${sets.join(',')} where id=$1`, args); await audit(req, 'PATIENT_UPDATED', 'patients', p.id); res.json({ ok: true }) }))
   app.post('/api/patients/:id/archive', need('edit_patients'), wrap(async (req, res) => {
